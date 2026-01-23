@@ -1,0 +1,7 @@
+{
+  "name": "Daily Pilot",
+  "description": "An autonomous AI agent that organizes your life through voice. It listens to brain dumps, reasons through conflicts, and manages your tasks and calendar in real-time.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
