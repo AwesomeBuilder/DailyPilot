@@ -1,3 +1,5 @@
+import { FunctionDeclaration, Type } from "@google/genai";
+
 export interface Task {
   id: string;
   title: string;
@@ -27,30 +29,47 @@ export interface Alert {
   severity: 'info' | 'warning' | 'critical';
 }
 
+export interface Suggestion {
+  id: string;
+  title: string;
+  category: 'Restaurant' | 'Research' | 'Shopping' | 'Other';
+  items: string[];
+}
+
 // Tool Definitions for Gemini
-// We use simple string types ("STRING", "OBJECT") to ensure maximum compatibility with the schema parser.
-export const TOOLS_DECLARATION = [
+export const TOOLS_DECLARATION: FunctionDeclaration[] = [
   {
     name: "log_thought",
-    description: "Log your internal reasoning process or 'Thought Trace' before taking action. Explain why you are making specific decisions.",
+    description: "Log your internal reasoning process. ALWAYS use this before taking action or when you need to explain your plan.",
     parameters: {
-      type: "OBJECT",
+      type: Type.OBJECT,
       properties: {
-        thought: { type: "STRING", description: "The reasoning text." },
-        type: { type: "STRING", enum: ["reasoning", "conflict"], description: "Type of thought." }
+        thought: { type: Type.STRING, description: "The reasoning text." },
+        type: { type: Type.STRING, enum: ["reasoning", "conflict"], description: "Type of thought." }
       },
       required: ["thought", "type"]
+    }
+  },
+  {
+    name: "get_calendar_events",
+    description: "Search the user's existing calendar for events. Use this when the user is unsure of a time or to check for conflicts.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        query: { type: Type.STRING, description: "Search query (e.g., 'Music Class', 'Today', 'Tomorrow')." },
+      },
+      required: ["query"]
     }
   },
   {
     name: "add_task",
     description: "Add a new task to the user's todo list.",
     parameters: {
-      type: "OBJECT",
+      type: Type.OBJECT,
       properties: {
-        title: { type: "STRING", description: "The task description." },
-        priority: { type: "STRING", enum: ["High", "Medium", "Low"], description: "Priority level." },
-        deadline: { type: "STRING", description: "Optional deadline (e.g., 'Today 5pm', 'Friday')." }
+        title: { type: Type.STRING, description: "The task description." },
+        priority: { type: Type.STRING, enum: ["High", "Medium", "Low"], description: "Priority level." },
+        deadline: { type: Type.STRING, description: "Optional deadline (e.g., 'Today 5pm', 'Friday')." }
       },
       required: ["title", "priority"]
     }
@@ -59,24 +78,37 @@ export const TOOLS_DECLARATION = [
     name: "add_event",
     description: "Schedule an event on the user's calendar.",
     parameters: {
-      type: "OBJECT",
+      type: Type.OBJECT,
       properties: {
-        title: { type: "STRING", description: "Event title." },
-        start: { type: "STRING", description: "Start time/date (ISO 8601 preferred or natural language)." },
-        duration: { type: "STRING", description: "Duration (e.g., '30 mins')." },
-        location: { type: "STRING", description: "Location or context." }
+        title: { type: Type.STRING, description: "Event title." },
+        start: { type: Type.STRING, description: "Start time/date (ISO 8601 preferred or natural language)." },
+        duration: { type: Type.STRING, description: "Duration (e.g., '30 mins')." },
+        location: { type: Type.STRING, description: "Location or context." }
       },
       required: ["title", "start", "duration"]
+    }
+  },
+  {
+    name: "save_suggestion",
+    description: "Save a list of suggestions or research findings (e.g., Recommended Restaurants, Shopping Lists).",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        title: { type: Type.STRING, description: "Title of the suggestion list." },
+        category: { type: Type.STRING, enum: ["Restaurant", "Research", "Shopping", "Other"] },
+        items: { type: Type.ARRAY, items: { type: Type.STRING }, description: "List of items/findings." }
+      },
+      required: ["title", "category", "items"]
     }
   },
   {
     name: "report_alert",
     description: "Proactively alert the user about conflicts or suggestions.",
     parameters: {
-      type: "OBJECT",
+      type: Type.OBJECT,
       properties: {
-        message: { type: "STRING", description: "The alert message." },
-        severity: { type: "STRING", enum: ["info", "warning", "critical"] }
+        message: { type: Type.STRING, description: "The alert message." },
+        severity: { type: Type.STRING, enum: ["info", "warning", "critical"] }
       },
       required: ["message", "severity"]
     }
@@ -85,22 +117,16 @@ export const TOOLS_DECLARATION = [
 
 export const SYSTEM_INSTRUCTION = `
 You are 'Daily Pilot', an elite autonomous life management agent. 
-Your goal is to parse conversational 'brain dumps' into structured tasks and calendar events.
-You do not just chat; you plan, organize, and verify.
+Your goal is to parse conversational 'brain dumps' into structured tasks, calendar events, and research notes.
 
-OPERATIONAL RULES:
-1. **Thought Trace**: Before or while performing actions, you MUST use the 'log_thought' tool to explain your internal reasoning. 
-   - Example: "User mentioned 'gym', checking for conflicts with 'work meeting'..."
-2. **Proactive**: Identify conflicts (e.g., overlapping events, unrealistic deadlines) and use 'report_alert' to notify the user.
-3. **Execution**: Use 'add_task' and 'add_event' to update the dashboard immediately when you identify a distinct item.
-4. **Clarification**: If details are vague (e.g., "reminder for later"), ask for clarification verbally, but still log your uncertainty in the thought trace.
-5. **Tone**: Professional, crisp, efficient. Like a co-pilot in a cockpit.
+**CRITICAL PROTOCOL**:
+1. **Verify Information**: If a user mentions an event but is unsure of details (e.g., "I don't remember the time"), you MUST first use \`get_calendar_events\` to find the answer. Do not guess.
+2. **Reasoning Loop**:
+   - Step 1: Analyze the request.
+   - Step 2: Log a thought (\`log_thought\`) about what information is missing or what needs to be done.
+   - Step 3: Call tools to get info (Search or Calendar).
+   - Step 4: Once you have the info, proceed to \`add_task\` or \`add_event\`.
+3. **Research & Suggestions**: If the user asks for recommendations (e.g., "new restaurants"), use Google Search (if available) or your knowledge to generate a list, then use \`save_suggestion\` to present it.
 
-When the user speaks, listen for:
-- Tasks ("I need to finish the report")
-- Events ("Meeting with John at 2pm tomorrow")
-- Conflicts ("I have to pick up the kids but I also have a call")
-
-When the user mentions an event but is unsure of the time (e.g., 'I think it's at 4'), do not ask for confirmation immediately. 
-Instead, first call the get_calendar_events tool to see if the event already exists. Only prompt the user for confirmation if the tool returns no results or if there is a clear conflict.
+**Tone**: Professional, crisp, efficient. Like a co-pilot in a cockpit.
 `;

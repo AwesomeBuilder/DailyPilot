@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { LiveManager } from './services/liveManager';
-import { sendTextPrompt } from './services/textAgent';
-import { Task, CalendarEvent, ThoughtLog, Alert } from './types';
+import { processTextPrompt } from './services/textAgent';
+import { Task, CalendarEvent, ThoughtLog, Alert, Suggestion } from './types';
 import { ReasoningLog } from './components/ReasoningLog';
 import { TaskList } from './components/TaskList';
 import { CalendarView } from './components/CalendarView';
+import { SuggestionList } from './components/SuggestionList';
 import { VoiceControl } from './components/VoiceControl';
 import { AlertCircle, X, Power } from 'lucide-react';
 
@@ -19,21 +20,55 @@ function App() {
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [logs, setLogs] = useState<ThoughtLog[]>([]);
   const [alert, setAlert] = useState<Alert | null>(null);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
 
   const liveManager = useRef<LiveManager | null>(null);
 
-  // Tool handlers
+  // --- Tool Logic ---
+  
+  // Mock Calendar Data Source
+  const searchCalendar = (query: string) => {
+    const q = query.toLowerCase();
+    // Simulate finding Ayan's class
+    if (q.includes('ayan') || q.includes('music') || q.includes('class')) {
+        return [
+            { title: "Ayan's Music Class", start: new Date(new Date().setHours(16, 30, 0, 0)).toISOString(), duration: "45 mins", location: "Mozart Academy" }
+        ];
+    }
+    // Simulate checking "tomorrow"
+    if (q.includes('tomorrow')) {
+        const tmrw = new Date();
+        tmrw.setDate(tmrw.getDate() + 1);
+        return []; // Free day
+    }
+    return [];
+  };
+
   const handleToolCall = useCallback(async (name: string, args: any) => {
+    // 1. Log the attempt to use a tool (Internal thought visibility)
+    if (name !== 'log_thought') {
+        // Optional: you could log raw tool calls here if you wanted debug info
+    }
+
     switch (name) {
       case 'log_thought':
-        const newLog: ThoughtLog = {
+        setLogs(prev => [...prev, {
           id: Date.now().toString() + Math.random(),
           timestamp: new Date(),
           content: args.thought,
           type: args.type || 'reasoning',
-        };
-        setLogs(prev => [...prev, newLog]);
+        }]);
         return { success: true };
+
+      case 'get_calendar_events':
+        const foundEvents = searchCalendar(args.query);
+        setLogs(prev => [...prev, {
+            id: Date.now().toString() + '-check',
+            timestamp: new Date(),
+            content: `Checking Calendar for "${args.query}"... Found ${foundEvents.length} events.`,
+            type: 'reasoning'
+        }]);
+        return { events: foundEvents };
 
       case 'add_task':
         const newTask: Task = {
@@ -69,6 +104,22 @@ function App() {
         }]);
         return { success: true, eventId: newEvent.id };
 
+      case 'save_suggestion':
+        const newSuggestion: Suggestion = {
+            id: Date.now().toString() + Math.random(),
+            title: args.title,
+            category: args.category,
+            items: args.items
+        };
+        setSuggestions(prev => [...prev, newSuggestion]);
+        setLogs(prev => [...prev, {
+            id: Date.now().toString() + '-action',
+            timestamp: new Date(),
+            content: `Saved List: ${newSuggestion.title}`,
+            type: 'action'
+        }]);
+        return { success: true };
+
       case 'report_alert':
         const newAlert: Alert = {
           id: Date.now().toString() + Math.random(),
@@ -93,7 +144,8 @@ function App() {
     }
   }, []);
 
-  // Initialize Manager
+  // --- Lifecycle & Connectivity ---
+
   useEffect(() => {
     try {
         liveManager.current = new LiveManager(
@@ -116,7 +168,6 @@ function App() {
 
   const toggleRecording = async () => {
     if (!liveManager.current) return;
-
     if (isRecording) {
       liveManager.current.stopAudio();
       setIsRecording(false);
@@ -135,8 +186,6 @@ function App() {
   const handleTextSubmit = async (text: string) => {
     setIsProcessingText(true);
     setError(null);
-    
-    // Log user input
     setLogs(prev => [...prev, {
         id: Date.now().toString(),
         timestamp: new Date(),
@@ -145,16 +194,10 @@ function App() {
     }]);
 
     try {
-        const response = await sendTextPrompt(text);
+        // Pass the handleToolCall to the agent so it can loop
+        const response = await processTextPrompt(text, handleToolCall);
         
-        // 1. Handle Function Calls
-        if (response.functionCalls) {
-            for (const fc of response.functionCalls) {
-                await handleToolCall(fc.name, fc.args);
-            }
-        }
-
-        // 2. Handle Text Response (if model speaks back)
+        // Handle Final Text Response
         if (response.text) {
              setLogs(prev => [...prev, {
                 id: Date.now().toString() + '-response',
@@ -163,10 +206,27 @@ function App() {
                 type: 'reasoning'
             }]);
         }
+        
+        // Handle Grounding (Search Results that weren't tool calls but metadata)
+        if (response.candidates?.[0]?.groundingMetadata?.groundingChunks) {
+            const chunks = response.candidates[0].groundingMetadata.groundingChunks;
+            const sources = chunks
+                .map((c: any) => c.web?.uri)
+                .filter(Boolean);
+            
+            if (sources.length > 0) {
+                 setSuggestions(prev => [...prev, {
+                    id: Date.now().toString() + 'sources',
+                    title: "Sources & References",
+                    category: "Research",
+                    items: sources
+                 }]);
+            }
+        }
 
     } catch (e: any) {
         console.error(e);
-        setError("Text processing failed: " + e.message);
+        setError("Processing failed: " + e.message);
     } finally {
         setIsProcessingText(false);
     }
@@ -248,9 +308,19 @@ function App() {
         </div>
 
         {/* Right Column: Dashboard (8 cols) */}
-        <div className="lg:col-span-8 grid grid-cols-1 md:grid-cols-2 gap-6 h-full min-h-0">
-            <TaskList tasks={tasks} />
-            <CalendarView events={events} />
+        <div className="lg:col-span-8 grid grid-cols-1 md:grid-cols-2 grid-rows-[3fr_2fr] gap-6 h-full min-h-0">
+            {/* Top Row: Tasks & Suggestions */}
+            <div className="md:col-span-1 h-full min-h-0">
+                 <TaskList tasks={tasks} />
+            </div>
+            <div className="md:col-span-1 h-full min-h-0">
+                 <SuggestionList suggestions={suggestions} />
+            </div>
+
+            {/* Bottom Row: Calendar */}
+            <div className="md:col-span-2 h-full min-h-0">
+                 <CalendarView events={events} />
+            </div>
         </div>
 
       </div>
