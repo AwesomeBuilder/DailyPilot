@@ -7,7 +7,7 @@ import { TaskList } from './components/TaskList';
 import { CalendarView } from './components/CalendarView';
 import { SuggestionList } from './components/SuggestionList';
 import { VoiceControl } from './components/VoiceControl';
-import { AlertCircle, X, Power } from 'lucide-react';
+import { AlertCircle, X, Power, UserCog } from 'lucide-react';
 
 function App() {
   const [isConnected, setIsConnected] = useState(false);
@@ -15,41 +15,184 @@ function App() {
   const [volume, setVolume] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [isProcessingText, setIsProcessingText] = useState(false);
+  const [userLocation, setUserLocation] = useState<string | null>(null);
   
+  // State
   const [tasks, setTasks] = useState<Task[]>([]);
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [logs, setLogs] = useState<ThoughtLog[]>([]);
   const [alert, setAlert] = useState<Alert | null>(null);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  
+  // Long Term Memory (User Profile)
+  const [userProfile, setUserProfile] = useState<Record<string, string>>({});
 
   const liveManager = useRef<LiveManager | null>(null);
 
+  // Load Profile from LocalStorage on Mount
+  useEffect(() => {
+    const savedProfile = localStorage.getItem('daily_pilot_user_profile');
+    if (savedProfile) {
+        try {
+            setUserProfile(JSON.parse(savedProfile));
+        } catch (e) {
+            console.error("Failed to load profile", e);
+        }
+    }
+  }, []);
+
+  // Save Profile when it changes
+  useEffect(() => {
+     if (Object.keys(userProfile).length > 0) {
+        localStorage.setItem('daily_pilot_user_profile', JSON.stringify(userProfile));
+     }
+  }, [userProfile]);
+
+  // Get Location on Mount
+  useEffect(() => {
+    if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+            (position) => {
+                setUserLocation(`${position.coords.latitude}, ${position.coords.longitude}`);
+            },
+            (err) => {
+                console.warn("Location access denied", err);
+                setUserLocation("San Francisco, CA (Default)");
+            }
+        );
+    } else {
+        setUserLocation("San Francisco, CA (Default)");
+    }
+  }, []);
+
   // --- Tool Logic ---
   
-  // Mock Calendar Data Source
+  // Mock Calendar Data Source (Dynamic based on Dummy Data)
   const searchCalendar = (query: string) => {
     const q = query.toLowerCase();
-    // Simulate finding Ayan's class
-    if (q.includes('ayan') || q.includes('music') || q.includes('class')) {
-        return [
-            { title: "Ayan's Music Class", start: new Date(new Date().setHours(16, 30, 0, 0)).toISOString(), duration: "45 mins", location: "Mozart Academy" }
-        ];
+    const today = new Date();
+    
+    // Helper to generate events for a specific date based on the Dummy Schedule
+    const generateEventsForDate = (baseDate: Date) => {
+        const day = baseDate.getDay(); // 0=Sun, 1=Mon, etc.
+        const dayEvents: CalendarEvent[] = [];
+        
+        const add = (title: string, h: number, m: number, dur: number, loc: string = "", desc: string = "") => {
+            const start = new Date(baseDate);
+            start.setHours(h, m, 0, 0);
+            const isoStart = start.toISOString();
+            // Use deterministic ID so we don't duplicate when searching same day multiple times
+            const id = `evt-${day}-${h}-${m}-${title.replace(/\s+/g, '-').toLowerCase()}`;
+            
+            dayEvents.push({
+                id,
+                title,
+                start: isoStart,
+                duration: `${dur} mins`,
+                location: loc,
+                description: desc || "Recurring Event"
+            });
+        };
+
+        // --- WEEKDAY ROUTINES (Mon-Fri) ---
+        if (day >= 1 && day <= 5) {
+            add("Drop-off Ayan", 8, 0, 30, "School", "Daily school run");
+        }
+
+        // --- MONDAY (1) & WEDNESDAY (3) ---
+        if (day === 1 || day === 3) {
+            add("Meeting 1: Team Sync", 9, 0, 60, "Conference Room A");
+            add("Meeting 2: 1:1 with Sarah", 10, 30, 30, "Zoom");
+            add("Meeting 3: Project Review", 13, 0, 60, "Zoom");
+            add("Meeting 4: Dev Sync", 14, 30, 60, "Room 404");
+            add("Ayan's Music Class", 16, 30, 45, "Mozart Academy", "Bring violin");
+        }
+        
+        // --- TUESDAY (2) & THURSDAY (4) ---
+        else if (day === 2 || day === 4) {
+            // CONFLICT: 8 AM Meeting vs 8 AM Drop-off
+            add("Meeting 1: Client Call", 8, 0, 30, "Zoom", "Urgent client sync"); 
+            add("Meeting 2: Design Review", 10, 30, 30, "Figma");
+            add("Meeting 3: Strategy", 13, 0, 60, "Boardroom");
+            add("Meeting 4: Ops Sync", 14, 30, 60, "Zoom");
+            add("Ayan's Taekwondo Class", 16, 30, 45, "Dojo Center", "Remember uniform");
+        }
+
+        // --- FRIDAY (5) ---
+        else if (day === 5) {
+            add("Weekly Wrap-up", 9, 0, 60, "All Hands");
+            add("Deep Work Block", 13, 0, 120, "Home Office", "No interruptions");
+            add("Early Finish", 16, 0, 0, "", "Start weekend");
+        }
+
+        // --- SATURDAY (6) ---
+        else if (day === 6) {
+            add("Grocery Run", 10, 0, 90, "Whole Foods", "Weekly groceries");
+            add("Dinner Reservation", 19, 0, 120, "Downtown", "Date night");
+        }
+
+        // --- SUNDAY (0) ---
+        else if (day === 0) {
+            add("Family Hike", 9, 0, 90, "Trailhead", "Nature walk");
+            add("Week Planning", 20, 0, 30, "Home", "Review schedule for next week");
+        }
+
+        return dayEvents;
+    };
+
+    // 1. "Week" Query: Return next 7 days
+    if (q.includes('week')) {
+        let allEvents: CalendarEvent[] = [];
+        for (let i = 0; i < 7; i++) {
+            const d = new Date(today);
+            d.setDate(today.getDate() + i);
+            allEvents = [...allEvents, ...generateEventsForDate(d)];
+        }
+        return allEvents;
     }
-    // Simulate checking "tomorrow"
-    if (q.includes('tomorrow')) {
-        const tmrw = new Date();
-        tmrw.setDate(tmrw.getDate() + 1);
-        return []; // Free day
+
+    // 2. Specific Day Query (e.g., "Friday", "Monday")
+    const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const targetDayIndex = days.findIndex(d => q.includes(d));
+    
+    if (targetDayIndex !== -1) {
+        const targetDate = new Date(today);
+        // Calculate days to add to reach the next occurrence of this day
+        let daysToAdd = (targetDayIndex - today.getDay() + 7) % 7;
+        if (daysToAdd === 0 && !q.includes('today')) daysToAdd = 7; 
+        
+        targetDate.setDate(today.getDate() + daysToAdd);
+        return generateEventsForDate(targetDate);
     }
-    return [];
+
+    // 3. Keyword Search
+    if (!q.includes('today') && !q.includes('tomorrow') && !q.includes('schedule') && !q.includes('calendar')) {
+        let weeklyEvents: CalendarEvent[] = [];
+        for (let i = 0; i < 7; i++) {
+             const d = new Date(today);
+             d.setDate(today.getDate() + i);
+             weeklyEvents = [...weeklyEvents, ...generateEventsForDate(d)];
+        }
+        const filtered = weeklyEvents.filter(e => e.title.toLowerCase().includes(q));
+        if (filtered.length > 0) return filtered;
+    }
+
+    // 4. Default: Return Today + Tomorrow
+    const tomorrow = new Date(today);
+    tomorrow.setDate(today.getDate() + 1);
+
+    const todayEvents = generateEventsForDate(today);
+    const tomorrowEvents = generateEventsForDate(tomorrow);
+    let results = [...todayEvents, ...tomorrowEvents];
+
+    if (!q.includes('today') && !q.includes('tomorrow') && !q.includes('schedule') && !q.includes('calendar')) {
+        results = results.filter(e => e.title.toLowerCase().includes(q));
+    }
+
+    return results;
   };
 
   const handleToolCall = useCallback(async (name: string, args: any) => {
-    // 1. Log the attempt to use a tool (Internal thought visibility)
-    if (name !== 'log_thought') {
-        // Optional: you could log raw tool calls here if you wanted debug info
-    }
-
     switch (name) {
       case 'log_thought':
         setLogs(prev => [...prev, {
@@ -62,6 +205,13 @@ function App() {
 
       case 'get_calendar_events':
         const foundEvents = searchCalendar(args.query);
+        // Auto-merge found events into the visible calendar state so the user sees what the agent sees
+        setEvents(prev => {
+            const existingIds = new Set(prev.map(e => e.id));
+            const newEvents = foundEvents.filter(e => !existingIds.has(e.id));
+            return [...prev, ...newEvents];
+        });
+        
         setLogs(prev => [...prev, {
             id: Date.now().toString() + '-check',
             timestamp: new Date(),
@@ -74,6 +224,7 @@ function App() {
         const newTask: Task = {
           id: Date.now().toString() + Math.random(),
           title: args.title,
+          description: args.description,
           priority: args.priority,
           deadline: args.deadline,
           status: 'pending',
@@ -82,7 +233,7 @@ function App() {
         setLogs(prev => [...prev, {
             id: Date.now().toString() + '-action',
             timestamp: new Date(),
-            content: `Created Task: ${newTask.title}`,
+            content: `Created Task: ${newTask.title} (${newTask.priority})`,
             type: 'action'
         }]);
         return { success: true, taskId: newTask.id };
@@ -91,6 +242,7 @@ function App() {
         const newEvent: CalendarEvent = {
           id: Date.now().toString() + Math.random(),
           title: args.title,
+          description: args.description,
           start: args.start,
           duration: args.duration,
           location: args.location,
@@ -99,7 +251,7 @@ function App() {
          setLogs(prev => [...prev, {
             id: Date.now().toString() + '-action',
             timestamp: new Date(),
-            content: `Scheduled: ${newEvent.title}`,
+            content: `Scheduled: ${newEvent.title} @ ${newEvent.location || 'No Location'}`,
             type: 'action'
         }]);
         return { success: true, eventId: newEvent.id };
@@ -136,6 +288,17 @@ function App() {
         if (args.severity === 'info') {
             setTimeout(() => setAlert(null), 5000);
         }
+        return { success: true };
+
+      case 'update_user_preference':
+         const { category, preference } = args;
+         setUserProfile(prev => ({ ...prev, [category]: preference }));
+         setLogs(prev => [...prev, {
+            id: Date.now().toString() + '-learn',
+            timestamp: new Date(),
+            content: `LEARNED: User prefers ${preference} for ${category}`,
+            type: 'action'
+        }]);
         return { success: true };
 
       default:
@@ -194,20 +357,49 @@ function App() {
     }]);
 
     try {
-        // Pass the handleToolCall to the agent so it can loop
-        const response = await processTextPrompt(text, handleToolCall);
+        // Build History from Logs for Multi-turn context
+        // We only use the last 6 entries for IMMEDIATE context
+        const history = logs
+            .filter(l => l.type === 'reasoning')
+            .slice(-6) 
+            .map(l => {
+                if (l.content.startsWith('User Input: ')) return `User: ${l.content.replace('User Input: ', '')}`;
+                return `Agent: ${l.content}`;
+            })
+            .join('\n');
+
+        // Construct Context-Aware Prompt with Long Term Memory
+        const contextString = `
+        [SYSTEM CONTEXT]
+        Current Time: ${new Date().toLocaleString()}
+        User Location (Lat/Long): ${userLocation || 'Unknown'}
         
-        // Handle Final Text Response
-        if (response.text) {
+        [LONG TERM MEMORY / USER PREFERENCES]
+        ${Object.keys(userProfile).length > 0 ? JSON.stringify(userProfile, null, 2) : "No learned preferences yet."}
+
+        [CONVERSATION HISTORY (Last few turns)]
+        ${history}
+
+        [CURRENT REQUEST]
+        ${text}
+        `;
+
+        // Pass the handleToolCall to the agent so it can loop
+        const response = await processTextPrompt(contextString, handleToolCall);
+        
+        // Handle Final Text Response Safely
+        const textPart = response.candidates?.[0]?.content?.parts?.find(p => p.text);
+        
+        if (textPart && textPart.text) {
              setLogs(prev => [...prev, {
                 id: Date.now().toString() + '-response',
                 timestamp: new Date(),
-                content: response.text,
+                content: textPart.text,
                 type: 'reasoning'
             }]);
         }
         
-        // Handle Grounding (Search Results that weren't tool calls but metadata)
+        // Handle Grounding
         if (response.candidates?.[0]?.groundingMetadata?.groundingChunks) {
             const chunks = response.candidates[0].groundingMetadata.groundingChunks;
             const sources = chunks
@@ -277,15 +469,20 @@ function App() {
                         <p className="text-xs text-slate-500">Autonomous Life Agent v1.0</p>
                     </div>
                 </div>
-                {isConnected && (
-                    <button 
-                        onClick={handleFullDisconnect}
-                        className="p-2 text-slate-500 hover:text-red-400 transition-colors"
-                        title="Disconnect Session"
-                    >
-                        <Power size={18} />
-                    </button>
-                )}
+                <div className="flex items-center gap-2">
+                     <button className="p-2 text-slate-500 hover:text-cyan-400 transition-colors" title="Memory Profile">
+                        <UserCog size={18} />
+                     </button>
+                    {isConnected && (
+                        <button 
+                            onClick={handleFullDisconnect}
+                            className="p-2 text-slate-500 hover:text-red-400 transition-colors"
+                            title="Disconnect Session"
+                        >
+                            <Power size={18} />
+                        </button>
+                    )}
+                </div>
             </div>
 
             {/* Input Control (Voice + Text) */}
@@ -319,7 +516,7 @@ function App() {
 
             {/* Bottom Row: Calendar */}
             <div className="md:col-span-2 h-full min-h-0">
-                 <CalendarView events={events} />
+                 <CalendarView events={events} tasks={tasks} />
             </div>
         </div>
 

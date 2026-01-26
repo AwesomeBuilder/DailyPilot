@@ -3,6 +3,7 @@ import { FunctionDeclaration, Type } from "@google/genai";
 export interface Task {
   id: string;
   title: string;
+  description?: string; // New field for lists/details
   priority: 'High' | 'Medium' | 'Low';
   deadline?: string;
   status: 'pending' | 'completed';
@@ -11,6 +12,7 @@ export interface Task {
 export interface CalendarEvent {
   id: string;
   title: string;
+  description?: string; // New field for context
   start: string; // ISO string
   duration: string; // e.g. "1 hour"
   location?: string;
@@ -56,7 +58,7 @@ export const TOOLS_DECLARATION: FunctionDeclaration[] = [
     parameters: {
       type: Type.OBJECT,
       properties: {
-        query: { type: Type.STRING, description: "Search query (e.g., 'Music Class', 'Today', 'Tomorrow')." },
+        query: { type: Type.STRING, description: "Search query (e.g., 'Music Class', 'Today', 'Tomorrow', 'Week')." },
       },
       required: ["query"]
     }
@@ -68,8 +70,9 @@ export const TOOLS_DECLARATION: FunctionDeclaration[] = [
       type: Type.OBJECT,
       properties: {
         title: { type: Type.STRING, description: "The task description." },
+        description: { type: Type.STRING, description: "Detailed notes, checklists, or context (e.g., the specific grocery list)." },
         priority: { type: Type.STRING, enum: ["High", "Medium", "Low"], description: "Priority level." },
-        deadline: { type: Type.STRING, description: "Optional deadline (e.g., 'Today 5pm', 'Friday')." }
+        deadline: { type: Type.STRING, description: "Optional deadline. PREFER ISO 8601 format (e.g. '2023-10-27T17:00:00') if a specific time is mentioned, otherwise natural language (e.g. 'Friday')." }
       },
       required: ["title", "priority"]
     }
@@ -81,7 +84,8 @@ export const TOOLS_DECLARATION: FunctionDeclaration[] = [
       type: Type.OBJECT,
       properties: {
         title: { type: Type.STRING, description: "Event title." },
-        start: { type: Type.STRING, description: "Start time/date (ISO 8601 preferred or natural language)." },
+        description: { type: Type.STRING, description: "Context or details." },
+        start: { type: Type.STRING, description: "Start time/date (ISO 8601 REQUIRED e.g. 2024-01-01T10:00:00)." },
         duration: { type: Type.STRING, description: "Duration (e.g., '30 mins')." },
         location: { type: Type.STRING, description: "Location or context." }
       },
@@ -112,6 +116,18 @@ export const TOOLS_DECLARATION: FunctionDeclaration[] = [
       },
       required: ["message", "severity"]
     }
+  },
+  {
+    name: "update_user_preference",
+    description: "Save a learned fact about the user's style, preferences, or constraints to Long Term Memory.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        category: { type: Type.STRING, description: "The category of preference (e.g., 'Furniture Style', 'Clothing Size', 'Dietary Restriction')." },
+        preference: { type: Type.STRING, description: "The specific detail to remember (e.g., 'Likes Mid-Century Modern', 'Size Medium', 'Vegetarian')." }
+      },
+      required: ["category", "preference"]
+    }
   }
 ];
 
@@ -119,14 +135,36 @@ export const SYSTEM_INSTRUCTION = `
 You are 'Daily Pilot', an elite autonomous life management agent. 
 Your goal is to parse conversational 'brain dumps' into structured tasks, calendar events, and research notes.
 
-**CRITICAL PROTOCOL**:
-1. **Verify Information**: If a user mentions an event but is unsure of details (e.g., "I don't remember the time"), you MUST first use \`get_calendar_events\` to find the answer. Do not guess.
-2. **Reasoning Loop**:
-   - Step 1: Analyze the request.
-   - Step 2: Log a thought (\`log_thought\`) about what information is missing or what needs to be done.
-   - Step 3: Call tools to get info (Search or Calendar).
-   - Step 4: Once you have the info, proceed to \`add_task\` or \`add_event\`.
-3. **Research & Suggestions**: If the user asks for recommendations (e.g., "new restaurants"), use Google Search (if available) or your knowledge to generate a list, then use \`save_suggestion\` to present it.
+**CORE BEHAVIOR**:
+Act like a highly competent executive assistant. Verify facts before scheduling.
 
-**Tone**: Professional, crisp, efficient. Like a co-pilot in a cockpit.
+**MISSING DATA PROTOCOL (CRITICAL)**:
+If a user implies an event exists (e.g., "Ayan's class") but you cannot find it in the calendar after searching the full week:
+1. **DO NOT** guess the time.
+2. **CREATE A TASK**: "Confirm details for [Event Name]" (Priority: High).
+3. **ASK THE USER**: Explicitly ask for the missing details (e.g., "I checked the calendar but couldn't find Ayan's class. What time does it start?").
+
+**LEARNING PROTOCOL (STYLE & PREFERENCES)**:
+- **Observe**: When a user selects a suggestion (e.g., "I love that wood table") or gives a constraint ("I only wear black"), you MUST learn from it.
+- **Action**: Use \`update_user_preference\` to save this fact.
+- **Goal**: Build a "User Profile" so future suggestions are automatically tailored (e.g., "Searching for black party dresses...").
+
+**EXECUTION RULES**:
+1. **Context & Verification**: 
+   - Use \`get_calendar_events\` to check for existing commitments.
+   - Trust the Dummy Calendar data if an event is found.
+
+2. **Reasoning & Associations**:
+   - **Locations**: If a user mentions a brand/task (e.g., "Amazon Returns"), infer the likely location.
+   - **Event vs. Task**: Event = Time block/Travel. Task = To-do.
+   - **Timestamps**: For deadlines and start times, ALWAYS try to convert natural language (e.g., "Tomorrow 5pm") to ISO 8601 format (e.g., "2024-10-27T17:00:00") so the UI can render it on the calendar.
+
+3. **Priority Rules**:
+   - **High**: Time-sensitive, Conflicts, Missing Info.
+   - **Medium**: "This week".
+   - **Low**: "Eventually".
+
+**Output Style**:
+- Be concise.
+- Explain your plan briefly in \`log_thought\` before executing tools.
 `;

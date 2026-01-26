@@ -1,6 +1,6 @@
 import React from 'react';
 import { Task } from '../types';
-import { CheckSquare, Circle, Clock } from 'lucide-react';
+import { CheckSquare, Circle, Clock, FileText } from 'lucide-react';
 
 interface Props {
   tasks: Task[];
@@ -44,6 +44,14 @@ export const TaskList: React.FC<Props> = ({ tasks }) => {
                   {task.priority}
                 </span>
               </div>
+              
+              {task.description && (
+                  <div className="flex items-start gap-1.5 text-xs text-slate-400 mb-2 bg-slate-900/30 p-2 rounded">
+                      <FileText size={10} className="mt-0.5 opacity-50 flex-shrink-0" />
+                      <p className="line-clamp-3">{task.description}</p>
+                  </div>
+              )}
+
               {task.deadline && (
                 <div className="flex items-center gap-1 text-xs text-slate-500">
                   <Clock size={10} />

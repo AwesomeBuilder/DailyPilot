@@ -1,6 +1,6 @@
 import React from 'react';
 import { Suggestion } from '../types';
-import { Lightbulb, ShoppingBag, Utensils, Search } from 'lucide-react';
+import { Lightbulb, ShoppingBag, Utensils, Search, ExternalLink } from 'lucide-react';
 
 interface Props {
   suggestions: Suggestion[];
@@ -14,6 +14,19 @@ export const SuggestionList: React.FC<Props> = ({ suggestions }) => {
       case 'Research': return <Search size={14} className="text-blue-400"/>;
       default: return <Lightbulb size={14} className="text-yellow-400"/>;
     }
+  };
+
+  const getLink = (item: string, category: string) => {
+    // If it is already a URL, return it
+    if (item.startsWith('http')) return item;
+    
+    // Construct Google Maps link for places
+    if (['Restaurant', 'Shopping', 'Place'].includes(category)) {
+        return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(item)}`;
+    }
+    
+    // Default to Google Search
+    return `https://www.google.com/search?q=${encodeURIComponent(item)}`;
   };
 
   return (
@@ -40,18 +53,26 @@ export const SuggestionList: React.FC<Props> = ({ suggestions }) => {
                 <h3 className="text-sm font-medium text-slate-200">{s.title}</h3>
             </div>
             <ul className="space-y-1.5 pl-1">
-                {s.items.map((item, idx) => (
-                    <li key={idx} className="text-xs text-slate-400 flex items-start gap-2">
-                        <span className="block w-1 h-1 mt-1.5 rounded-full bg-slate-600 flex-shrink-0"></span>
-                        <span className="break-words">
-                            {item.startsWith('http') ? (
-                                <a href={item} target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline truncate block">
-                                    {item}
-                                </a>
-                            ) : item}
-                        </span>
-                    </li>
-                ))}
+                {s.items.map((item, idx) => {
+                    const link = getLink(item, s.category);
+                    const isUrl = item.startsWith('http');
+                    const display = isUrl ? new URL(item).hostname : item;
+
+                    return (
+                        <li key={idx} className="text-xs text-slate-400 flex items-start gap-2 group">
+                            <span className="block w-1 h-1 mt-1.5 rounded-full bg-slate-600 flex-shrink-0"></span>
+                            <a 
+                                href={link} 
+                                target="_blank" 
+                                rel="noreferrer" 
+                                className="flex items-center gap-1 hover:text-cyan-400 transition-colors break-all"
+                            >
+                                <span className={isUrl ? "text-cyan-400" : ""}>{display}</span>
+                                <ExternalLink size={10} className="opacity-0 group-hover:opacity-100 transition-opacity" />
+                            </a>
+                        </li>
+                    );
+                })}
             </ul>
           </div>
         ))}
