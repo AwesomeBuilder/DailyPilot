@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { LiveManager } from './services/liveManager';
 import { processTextPrompt } from './services/textAgent';
-import { Task, CalendarEvent, ThoughtLog, Alert, Suggestion } from './types';
+import { Task, CalendarEvent, ThoughtLog, Alert, Suggestion, MessageDraft } from './types';
 import { ReasoningLog } from './components/ReasoningLog';
 import { TaskList } from './components/TaskList';
 import { CalendarView } from './components/CalendarView';
 import { SuggestionList } from './components/SuggestionList';
+import { MessageDraftList } from './components/MessageDraftList';
 import { VoiceControl } from './components/VoiceControl';
 import { AlertCircle, X, Power, UserCog } from 'lucide-react';
 
@@ -23,6 +24,7 @@ function App() {
   const [logs, setLogs] = useState<ThoughtLog[]>([]);
   const [alert, setAlert] = useState<Alert | null>(null);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [drafts, setDrafts] = useState<MessageDraft[]>([]);
   
   // Long Term Memory (User Profile)
   const [userProfile, setUserProfile] = useState<Record<string, string>>({});
@@ -67,6 +69,13 @@ function App() {
 
   // --- Tool Logic ---
   
+  // Helper to get Local ISO string (YYYY-MM-DDTHH:mm:ss) without Z
+  // This ensures the LLM sees "08:00:00" for 8 AM, not "16:00:00Z"
+  const getLocalISOString = (date: Date) => {
+    const offset = date.getTimezoneOffset() * 60000;
+    return (new Date(date.getTime() - offset)).toISOString().slice(0, -1);
+  };
+
   // Mock Calendar Data Source (Dynamic based on Dummy Data)
   const searchCalendar = (query: string) => {
     const q = query.toLowerCase();
@@ -80,14 +89,17 @@ function App() {
         const add = (title: string, h: number, m: number, dur: number, loc: string = "", desc: string = "") => {
             const start = new Date(baseDate);
             start.setHours(h, m, 0, 0);
-            const isoStart = start.toISOString();
+            
+            // Use Local ISO format so the model reads the correct wall-clock time
+            const localIsoStart = getLocalISOString(start);
+            
             // Use deterministic ID so we don't duplicate when searching same day multiple times
             const id = `evt-${day}-${h}-${m}-${title.replace(/\s+/g, '-').toLowerCase()}`;
             
             dayEvents.push({
                 id,
                 title,
-                start: isoStart,
+                start: localIsoStart,
                 duration: `${dur} mins`,
                 location: loc,
                 description: desc || "Recurring Event"
@@ -215,7 +227,7 @@ function App() {
         setLogs(prev => [...prev, {
             id: Date.now().toString() + '-check',
             timestamp: new Date(),
-            content: `Checking Calendar for "${args.query}"... Found ${foundEvents.length} events.`,
+            content: `Checked Calendar for "${args.query}". Found ${foundEvents.length} events.`,
             type: 'reasoning'
         }]);
         return { events: foundEvents };
@@ -268,6 +280,23 @@ function App() {
             id: Date.now().toString() + '-action',
             timestamp: new Date(),
             content: `Saved List: ${newSuggestion.title}`,
+            type: 'action'
+        }]);
+        return { success: true };
+      
+      case 'draft_message':
+        const newDraft: MessageDraft = {
+            id: Date.now().toString() + Math.random(),
+            recipient: args.recipient,
+            platform: args.platform,
+            reason: args.reason,
+            content: args.content
+        };
+        setDrafts(prev => [...prev, newDraft]);
+        setLogs(prev => [...prev, {
+            id: Date.now().toString() + '-draft',
+            timestamp: new Date(),
+            content: `Drafted ${args.platform} to ${args.recipient}`,
             type: 'action'
         }]);
         return { success: true };
@@ -369,9 +398,13 @@ function App() {
             .join('\n');
 
         // Construct Context-Aware Prompt with Long Term Memory
+        const now = new Date();
+        const localTimeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        
         const contextString = `
         [SYSTEM CONTEXT]
-        Current Time: ${new Date().toLocaleString()}
+        Current Local Time: ${localTimeStr}
+        Current Date: ${now.toDateString()}
         User Location (Lat/Long): ${userLocation || 'Unknown'}
         
         [LONG TERM MEMORY / USER PREFERENCES]
@@ -506,12 +539,27 @@ function App() {
 
         {/* Right Column: Dashboard (8 cols) */}
         <div className="lg:col-span-8 grid grid-cols-1 md:grid-cols-2 grid-rows-[3fr_2fr] gap-6 h-full min-h-0">
-            {/* Top Row: Tasks & Suggestions */}
+            {/* Top Row: Tasks & Assistants (Drafts + Suggestions) */}
             <div className="md:col-span-1 h-full min-h-0">
                  <TaskList tasks={tasks} />
             </div>
-            <div className="md:col-span-1 h-full min-h-0">
-                 <SuggestionList suggestions={suggestions} />
+            
+            <div className="md:col-span-1 h-full min-h-0 flex flex-col gap-6">
+                {/* Dynamically show Drafts if available, otherwise show Suggestions full height */}
+                {drafts.length > 0 ? (
+                    <>
+                        <div className="flex-1 min-h-0">
+                             <MessageDraftList drafts={drafts} />
+                        </div>
+                        <div className="flex-1 min-h-0">
+                             <SuggestionList suggestions={suggestions} />
+                        </div>
+                    </>
+                ) : (
+                    <div className="h-full">
+                         <SuggestionList suggestions={suggestions} />
+                    </div>
+                )}
             </div>
 
             {/* Bottom Row: Calendar */}

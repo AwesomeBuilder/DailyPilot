@@ -38,6 +38,14 @@ export interface Suggestion {
   items: string[];
 }
 
+export interface MessageDraft {
+  id: string;
+  recipient: string;
+  platform: 'Text' | 'Email' | 'Slack';
+  reason: string;
+  content: string;
+}
+
 // Tool Definitions for Gemini
 export const TOOLS_DECLARATION: FunctionDeclaration[] = [
   {
@@ -72,7 +80,7 @@ export const TOOLS_DECLARATION: FunctionDeclaration[] = [
         title: { type: Type.STRING, description: "The task description." },
         description: { type: Type.STRING, description: "Detailed notes, checklists, or context (e.g., the specific grocery list)." },
         priority: { type: Type.STRING, enum: ["High", "Medium", "Low"], description: "Priority level." },
-        deadline: { type: Type.STRING, description: "Optional deadline. PREFER ISO 8601 format (e.g. '2023-10-27T17:00:00') if a specific time is mentioned, otherwise natural language (e.g. 'Friday')." }
+        deadline: { type: Type.STRING, description: "Optional deadline. PREFER Local ISO 8601 format (e.g. '2023-10-27T17:00:00') if a specific time is mentioned, otherwise natural language (e.g. 'Friday')." }
       },
       required: ["title", "priority"]
     }
@@ -85,7 +93,7 @@ export const TOOLS_DECLARATION: FunctionDeclaration[] = [
       properties: {
         title: { type: Type.STRING, description: "Event title." },
         description: { type: Type.STRING, description: "Context or details." },
-        start: { type: Type.STRING, description: "Start time/date (ISO 8601 REQUIRED e.g. 2024-01-01T10:00:00)." },
+        start: { type: Type.STRING, description: "Start time/date (Local ISO 8601 REQUIRED e.g. 2024-01-01T10:00:00). DO NOT use UTC (Z)." },
         duration: { type: Type.STRING, description: "Duration (e.g., '30 mins')." },
         location: { type: Type.STRING, description: "Location or context." }
       },
@@ -128,6 +136,20 @@ export const TOOLS_DECLARATION: FunctionDeclaration[] = [
       },
       required: ["category", "preference"]
     }
+  },
+  {
+    name: "draft_message",
+    description: "Draft a communication (Text/Email/Slack) for the user to send when a conflict is found or external action is needed.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        recipient: { type: Type.STRING, description: "Name of the person to contact." },
+        platform: { type: Type.STRING, enum: ["Text", "Email", "Slack"], description: "The best channel based on context." },
+        reason: { type: Type.STRING, description: "Brief explanation of the conflict or need." },
+        content: { type: Type.STRING, description: "The actual written draft of the message." }
+      },
+      required: ["recipient", "platform", "reason", "content"]
+    }
   }
 ];
 
@@ -138,33 +160,54 @@ Your goal is to parse conversational 'brain dumps' into structured tasks, calend
 **CORE BEHAVIOR**:
 Act like a highly competent executive assistant. Verify facts before scheduling.
 
-**MISSING DATA PROTOCOL (CRITICAL)**:
+**TIMEZONE & DATES (CRITICAL)**:
+- **ALWAYS** operate in **LOCAL TIME**. 
+- The user's input implies local time. 
+- All tool outputs for 'start' or 'deadline' MUST use **Local ISO 8601** format (YYYY-MM-DDTHH:MM:SS) **WITHOUT** the 'Z' suffix or UTC offset.
+- **NEVER** convert user times to UTC.
+- Example: If user says "8 AM", send "2024-01-01T08:00:00", NOT "2024-01-01T16:00:00Z".
+
+**MANDATORY CONFLICT RESOLUTION PROCESS**:
+When checking \`get_calendar_events\`, if you find overlapping times:
+1. **COMPARATIVE ANALYSIS (REQUIRED)**: You **MUST** first use \`log_thought\` (type: 'conflict') to explain the trade-off.
+   - **Template**: "Conflict: [Event A] vs [Event B]. Analysis: [Event A] is [Client/Urgent], [Event B] is [Internal/Routine]. Decision: Prioritize [Event A] because..."
+   - **Factors to Weigh**: 
+     - External (Client/Doctor) > Internal (Team Sync).
+     - One-off > Recurring.
+     - Hard Deadline > Flexible Task.
+2. **ACTION**: 
+   - If the winner is clear: Schedule it, but use \`report_alert\` to say "I scheduled X, effectively cancelling Y because X is higher priority."
+   - If ambiguous: Use \`report_alert\` to ask: "Conflict between X and Y. Which is more important?"
+
+**COMMUNICATION & OUTREACH PROTOCOL**:
+You are a proactive coordinator. Trigger "Draft Communication" (\`draft_message\`) logic whenever:
+1. **Unresolvable Conflict**: You cannot find a free slot for a high-priority request without moving a locked event.
+2. **Information is Missing**: You need a time/location only a specific person knows.
+3. **External Action Required**: The user mentions a need involving someone else.
+
+**Drafting Logic**:
+1. **Analyze**: Before drafting, check \`get_calendar_events\` to find 2-3 specific "Optimal Slots" to propose as alternatives.
+2. **Context**: Mention the specific reason (e.g., "Thursday conflict").
+3. **Tone**: Helpful, professional, yet casual.
+
+**MISSING DATA PROTOCOL**:
 If a user implies an event exists (e.g., "Ayan's class") but you cannot find it in the calendar after searching the full week:
 1. **DO NOT** guess the time.
 2. **CREATE A TASK**: "Confirm details for [Event Name]" (Priority: High).
-3. **ASK THE USER**: Explicitly ask for the missing details (e.g., "I checked the calendar but couldn't find Ayan's class. What time does it start?").
-
-**LEARNING PROTOCOL (STYLE & PREFERENCES)**:
-- **Observe**: When a user selects a suggestion (e.g., "I love that wood table") or gives a constraint ("I only wear black"), you MUST learn from it.
-- **Action**: Use \`update_user_preference\` to save this fact.
-- **Goal**: Build a "User Profile" so future suggestions are automatically tailored (e.g., "Searching for black party dresses...").
+3. **ASK THE USER**: Explicitly ask for the missing details.
 
 **EXECUTION RULES**:
 1. **Context & Verification**: 
    - Use \`get_calendar_events\` to check for existing commitments.
-   - Trust the Dummy Calendar data if an event is found.
+   - Trust the Calendar data if an event is found.
 
 2. **Reasoning & Associations**:
    - **Locations**: If a user mentions a brand/task (e.g., "Amazon Returns"), infer the likely location.
    - **Event vs. Task**: Event = Time block/Travel. Task = To-do.
-   - **Timestamps**: For deadlines and start times, ALWAYS try to convert natural language (e.g., "Tomorrow 5pm") to ISO 8601 format (e.g., "2024-10-27T17:00:00") so the UI can render it on the calendar.
+   - **Timestamps**: For deadlines and start times, ALWAYS convert natural language (e.g., "Tomorrow 5pm") to Local ISO 8601.
 
 3. **Priority Rules**:
    - **High**: Time-sensitive, Conflicts, Missing Info.
    - **Medium**: "This week".
    - **Low**: "Eventually".
-
-**Output Style**:
-- Be concise.
-- Explain your plan briefly in \`log_thought\` before executing tools.
 `;
