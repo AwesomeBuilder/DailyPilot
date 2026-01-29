@@ -9,51 +9,51 @@ interface Props {
 export const TaskList: React.FC<Props> = ({ tasks }) => {
   const getPriorityColor = (p: string) => {
     switch (p) {
-      case 'High': return 'text-rose-400 border-rose-400/30 bg-rose-400/10';
-      case 'Medium': return 'text-amber-400 border-amber-400/30 bg-amber-400/10';
-      case 'Low': return 'text-blue-400 border-blue-400/30 bg-blue-400/10';
-      default: return 'text-slate-400 border-slate-400/30';
+      case 'High': return 'text-rose-600 border-rose-300 bg-rose-50';
+      case 'Medium': return 'text-amber-600 border-amber-300 bg-amber-50';
+      case 'Low': return 'text-blue-600 border-blue-300 bg-blue-50';
+      default: return 'text-gray-600 border-gray-300 bg-gray-50';
     }
   };
 
   return (
-    <div className="h-full flex flex-col bg-slate-900/50 backdrop-blur-sm border border-slate-700 rounded-xl overflow-hidden shadow-xl">
-      <div className="p-4 border-b border-slate-700 bg-slate-800/50 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-white uppercase tracking-wider flex items-center gap-2">
-          <CheckSquare size={16} className="text-emerald-400"/>
+    <div className="h-full flex flex-col bg-white/80 backdrop-blur-sm border border-gray-200 rounded-2xl overflow-hidden shadow-lg">
+      <div className="p-4 border-b border-gray-200 bg-gray-50/80 flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-teal-dark uppercase tracking-wider flex items-center gap-2">
+          <CheckSquare size={16} className="text-emerald-500"/>
           Tasks
         </h2>
-        <span className="text-xs text-slate-500 bg-slate-800 px-2 py-1 rounded-full">{tasks.length}</span>
+        <span className="text-xs text-gray-500 bg-gray-200 px-2 py-1 rounded-full">{tasks.length}</span>
       </div>
-      
+
       <div className="flex-1 overflow-y-auto p-4 space-y-3 scrollbar-hide">
         {tasks.length === 0 && (
-           <div className="text-slate-600 text-center italic mt-10 text-sm">
+           <div className="text-gray-400 text-center italic mt-10 text-sm">
             No pending tasks.
           </div>
         )}
         {tasks.map((task) => (
-          <div key={task.id} className="group bg-slate-800/40 hover:bg-slate-800/60 border border-slate-700 rounded-lg p-3 transition-all flex items-start gap-3">
-            <button className="mt-1 text-slate-500 hover:text-emerald-400 transition-colors">
+          <div key={task.id} className="group bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl p-3 transition-all flex items-start gap-3">
+            <button className="mt-1 text-gray-400 hover:text-emerald-500 transition-colors">
               <Circle size={18} />
             </button>
             <div className="flex-1 min-w-0">
               <div className="flex items-center justify-between mb-1">
-                <p className="text-sm font-medium text-slate-200 truncate">{task.title}</p>
+                <p className="text-sm font-medium text-teal-dark truncate">{task.title}</p>
                 <span className={`text-[10px] px-1.5 py-0.5 rounded border ${getPriorityColor(task.priority)}`}>
                   {task.priority}
                 </span>
               </div>
-              
+
               {task.description && (
-                  <div className="flex items-start gap-1.5 text-xs text-slate-400 mb-2 bg-slate-900/30 p-2 rounded">
+                  <div className="flex items-start gap-1.5 text-xs text-gray-600 mb-2 bg-white p-2 rounded-lg border border-gray-100">
                       <FileText size={10} className="mt-0.5 opacity-50 flex-shrink-0" />
                       <p className="line-clamp-3">{task.description}</p>
                   </div>
               )}
 
               {task.deadline && (
-                <div className="flex items-center gap-1 text-xs text-slate-500">
+                <div className="flex items-center gap-1 text-xs text-gray-500">
                   <Clock size={10} />
                   <span>{task.deadline}</span>
                 </div>

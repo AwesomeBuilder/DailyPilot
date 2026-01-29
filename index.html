@@ -2,13 +2,36 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>Daily Pilot</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              cream: '#f6f3f3',
+              teal: {
+                dark: '#093339',
+                primary: '#0d9488',
+                light: '#5eead4',
+                pale: '#ccfbf1',
+              }
+            }
+          }
+        }
+      }
+    </script>
     <style>
-      body { font-family: 'Inter', sans-serif; background-color: #0f172a; color: #e2e8f0; }
-      /* Custom scrollbar for log */
+      body {
+        font-family: 'Inter', sans-serif;
+        background-color: #f6f3f3;
+        color: #093339;
+        overflow-x: hidden;
+      }
+
+      /* Hide scrollbar */
       .scrollbar-hide::-webkit-scrollbar {
           display: none;
       }
@@ -16,13 +39,149 @@
           -ms-overflow-style: none;
           scrollbar-width: none;
       }
-      @keyframes pulse-ring {
-        0% { transform: scale(0.8); box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.7); }
-        70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(56, 189, 248, 0); }
-        100% { transform: scale(0.8); box-shadow: 0 0 0 0 rgba(56, 189, 248, 0); }
+
+      /* Flowing Fabric Wave - Simple Single Image */
+      .wave-container {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #f6f3f3;
+        z-index: 1;
       }
-      .animate-pulse-ring {
-        animation: pulse-ring 2s infinite;
+
+      /* Single fabric image - covers container */
+      .fabric-layer {
+        position: absolute;
+        inset: 0;
+        background: url('/fabric-wave.png') center center no-repeat;
+        background-size: cover;
+      }
+
+      .fabric-layer-1 {
+        z-index: 1;
+      }
+
+      /* Hide extra layers - only using one */
+      .fabric-layer-2,
+      .fabric-layer-3 {
+        display: none;
+      }
+
+      /* Active state - gentle undulating wave effect */
+      .wave-container.active .fabric-layer-1 {
+        animation: wave-undulate 3s ease-in-out infinite;
+      }
+
+      @keyframes wave-undulate {
+        0%, 100% {
+          transform: scale(1.02) skewX(0deg);
+          filter: hue-rotate(0deg) brightness(1);
+        }
+        25% {
+          transform: scale(1.03) skewX(0.5deg);
+          filter: hue-rotate(3deg) brightness(1.02);
+        }
+        50% {
+          transform: scale(1.02) skewX(0deg);
+          filter: hue-rotate(0deg) brightness(1.04);
+        }
+        75% {
+          transform: scale(1.03) skewX(-0.5deg);
+          filter: hue-rotate(-3deg) brightness(1.02);
+        }
+      }
+
+      /* Shimmer light effect moving across */
+      .wave-container.active::after {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: -100%;
+        width: 50%;
+        height: 100%;
+        background: linear-gradient(
+          90deg,
+          transparent 0%,
+          rgba(255, 255, 255, 0.15) 50%,
+          transparent 100%
+        );
+        z-index: 5;
+        animation: shimmer-sweep 2s ease-in-out infinite;
+        pointer-events: none;
+      }
+
+      @keyframes shimmer-sweep {
+        0% {
+          left: -50%;
+        }
+        100% {
+          left: 150%;
+        }
+      }
+
+      /* Hide old classes */
+      .fabric-bg, .fabric-bg-overlay, .ribbon {
+        display: none;
+      }
+
+      /* Flowing River Animation */
+      .flowing-river-container {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        background: linear-gradient(180deg, #f6f3f3 0%, #f0fdfa 100%);
+      }
+
+      .flowing-river-container svg {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        min-width: 120%;
+        min-height: 120%;
+      }
+
+      /* Mic button shadow */
+      .mic-button {
+        box-shadow: 0 8px 30px rgba(9, 51, 57, 0.15), 0 4px 12px rgba(9, 51, 57, 0.1);
+      }
+
+      .mic-button:hover {
+        box-shadow: 0 12px 40px rgba(9, 51, 57, 0.2), 0 6px 16px rgba(9, 51, 57, 0.12);
+      }
+
+      .mic-button.active {
+        box-shadow: 0 8px 30px rgba(13, 148, 136, 0.3), 0 4px 12px rgba(13, 148, 136, 0.2);
+      }
+
+      /* Mic button pulse */
+      @keyframes mic-pulse {
+        0%, 100% { box-shadow: 0 0 0 0 rgba(9, 51, 57, 0.2); }
+        50% { box-shadow: 0 0 0 20px rgba(9, 51, 57, 0); }
+      }
+
+      .mic-button.active {
+        animation: mic-pulse 1.5s ease-in-out infinite;
+      }
+
+      /* Panel slide animations */
+      @keyframes slideUp {
+        from { transform: translateY(100%); opacity: 0; }
+        to { transform: translateY(0); opacity: 1; }
+      }
+
+      .slide-up {
+        animation: slideUp 0.3s ease-out forwards;
+      }
+
+      @keyframes fadeIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+
+      .fade-in {
+        animation: fadeIn 0.2s ease-out forwards;
       }
     </style>
   <script type="importmap">
@@ -39,5 +198,6 @@
 </head>
   <body>
     <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
   </body>
 </html>

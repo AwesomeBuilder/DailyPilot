@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Mic, MicOff, BrainCircuit, Keyboard, Send, Loader2 } from 'lucide-react';
+import { Mic, Keyboard, Send, Loader2 } from 'lucide-react';
+import { FabricWave3D } from './FabricWave3D';
 
 interface Props {
   isConnected: boolean;
@@ -11,14 +12,14 @@ interface Props {
   error: string | null;
 }
 
-export const VoiceControl: React.FC<Props> = ({ 
-    isConnected, 
-    isRecording, 
+export const VoiceControl: React.FC<Props> = ({
+    isConnected,
+    isRecording,
     isProcessingText,
-    volume, 
-    onToggle, 
+    volume,
+    onToggle,
     onTextSubmit,
-    error 
+    error
 }) => {
   const [mode, setMode] = useState<'voice' | 'text'>('voice');
   const [inputText, setInputText] = useState('');
@@ -31,26 +32,29 @@ export const VoiceControl: React.FC<Props> = ({
   };
 
   return (
-    <div className="flex flex-col items-center justify-center p-6 relative min-h-[300px]">
+    <div className="flex flex-col items-center justify-center relative min-h-[340px] overflow-hidden rounded-2xl bg-cream">
+      {/* 3D Fabric Wave Animation Background */}
+      <FabricWave3D isActive={isRecording || isConnected} />
+
        {/* Error Message */}
        {error && (
-        <div className="absolute top-2 bg-red-500/10 border border-red-500/50 text-red-200 text-xs px-3 py-1 rounded-full mb-4 z-20">
+        <div className="absolute top-2 bg-red-500/10 border border-red-500/50 text-red-700 text-xs px-3 py-1 rounded-full mb-4 z-20">
           {error}
         </div>
       )}
 
       {/* Mode Toggles */}
-      <div className="absolute top-4 right-4 flex gap-2 bg-slate-800 rounded-lg p-1">
-        <button 
+      <div className="absolute top-4 right-4 flex gap-2 bg-white/80 backdrop-blur-sm rounded-lg p-1 shadow-sm z-20">
+        <button
             onClick={() => setMode('voice')}
-            className={`p-2 rounded-md transition-all ${mode === 'voice' ? 'bg-cyan-500 text-slate-900' : 'text-slate-400 hover:text-white'}`}
+            className={`p-2 rounded-md transition-all ${mode === 'voice' ? 'bg-teal-primary text-white' : 'text-teal-dark/60 hover:text-teal-dark'}`}
             title="Voice Mode"
         >
             <Mic size={16} />
         </button>
-        <button 
+        <button
             onClick={() => setMode('text')}
-            className={`p-2 rounded-md transition-all ${mode === 'text' ? 'bg-cyan-500 text-slate-900' : 'text-slate-400 hover:text-white'}`}
+            className={`p-2 rounded-md transition-all ${mode === 'text' ? 'bg-teal-primary text-white' : 'text-teal-dark/60 hover:text-teal-dark'}`}
             title="Text Mode"
         >
             <Keyboard size={16} />
@@ -59,84 +63,54 @@ export const VoiceControl: React.FC<Props> = ({
 
       {/* VOICE MODE UI */}
       {mode === 'voice' && (
-          <div className="flex flex-col items-center mt-6">
+          <div className="flex flex-col items-center relative z-10">
+            {/* Mic Button */}
             <button
                 onClick={onToggle}
-                className={`relative z-10 flex items-center justify-center w-24 h-24 rounded-full transition-all duration-300 shadow-2xl ${
-                isRecording 
-                    ? 'bg-gradient-to-br from-cyan-500 to-blue-600 hover:shadow-cyan-500/50' 
-                    : isConnected 
-                        ? 'bg-slate-700 border-2 border-cyan-500/50 animate-pulse'
-                        : 'bg-slate-700 hover:bg-slate-600 border border-slate-600'
+                className={`mic-button relative flex items-center justify-center w-20 h-20 rounded-full transition-all duration-300 shadow-lg ${
+                isRecording
+                    ? 'active bg-white border-2 border-teal-primary'
+                    : 'bg-white/90 hover:bg-white border border-gray-200 hover:shadow-xl'
                 }`}
             >
-                {isRecording ? (
-                <Mic className="w-8 h-8 text-white" />
-                ) : isConnected ? (
-                <BrainCircuit className="w-8 h-8 text-cyan-400" />
-                ) : (
-                <MicOff className="w-8 h-8 text-slate-400" />
-                )}
+                <Mic className={`w-7 h-7 ${isRecording ? 'text-teal-primary' : 'text-teal-dark/70'}`} />
             </button>
 
-            {/* Visualizer Rings */}
-            {isRecording && (
-                <>
-                <div 
-                    className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-0 rounded-full border border-cyan-500/30"
-                    style={{
-                    width: `${100 + volume * 150}px`,
-                    height: `${100 + volume * 150}px`,
-                    transition: 'all 0.1s ease-out'
-                    }}
-                />
-                <div 
-                    className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-0 rounded-full bg-cyan-500/10 animate-pulse-ring"
-                    style={{
-                    width: '100px',
-                    height: '100px',
-                    }}
-                />
-                </>
-            )}
-
-            <div className="mt-8 text-center">
-                <h3 className={`text-lg font-medium ${isRecording ? 'text-cyan-400' : isConnected ? 'text-indigo-400' : 'text-slate-400'}`}>
-                {isRecording ? 'Listening...' : isConnected ? 'Processing & Reasoning' : 'Voice Offline'}
+            {/* Status Text */}
+            <div className="mt-6 text-center">
+                <h3 className={`text-base font-medium ${isRecording ? 'text-teal-primary' : 'text-teal-dark/60'}`}>
+                  {isRecording ? 'Listening...' : 'Tap to speak'}
                 </h3>
-                <p className="text-xs text-slate-500 mt-1 uppercase tracking-widest">
-                {isRecording ? 'Tap to finish' : isConnected ? 'Tap to add more input' : 'Tap to start session'}
-                </p>
             </div>
           </div>
       )}
 
       {/* TEXT MODE UI */}
       {mode === 'text' && (
-          <div className="w-full flex flex-col h-full mt-4">
+          <div className="w-full flex flex-col h-full relative z-10 px-6 py-4">
               <div className="flex-1 flex flex-col items-center justify-center text-center space-y-4 mb-6">
-                <div className="w-16 h-16 rounded-2xl bg-slate-800 flex items-center justify-center border border-slate-700">
-                    <Keyboard className="text-cyan-400 w-8 h-8" />
+                <div className="w-14 h-14 rounded-2xl bg-white/80 backdrop-blur-sm flex items-center justify-center border border-gray-200 shadow-sm">
+                    <Keyboard className="text-teal-primary w-7 h-7" />
                 </div>
                 <div>
-                    <h3 className="text-lg font-medium text-slate-200">Text Input Mode</h3>
-                    <p className="text-xs text-slate-500 mt-1">Type your brain dump below to test the agent logic.</p>
+                    <h3 className="text-lg font-medium text-teal-dark">Text Input Mode</h3>
+                    <p className="text-xs text-teal-dark/50 mt-1">Type your brain dump below</p>
                 </div>
               </div>
-              
+
               <form onSubmit={handleSubmit} className="relative w-full">
                 <input
                     type="text"
                     value={inputText}
                     onChange={(e) => setInputText(e.target.value)}
                     placeholder="E.g., 'Remind me to call Mom at 5pm...'"
-                    className="w-full bg-slate-800 border border-slate-700 text-slate-200 rounded-xl py-3 pl-4 pr-12 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 placeholder:text-slate-600"
+                    className="w-full bg-white/90 backdrop-blur-sm border border-gray-200 text-teal-dark rounded-xl py-3 pl-4 pr-12 focus:outline-none focus:ring-2 focus:ring-teal-primary/30 placeholder:text-teal-dark/30 shadow-sm"
                     disabled={isProcessingText}
                 />
-                <button 
-                    type="submit" 
+                <button
+                    type="submit"
                     disabled={!inputText.trim() || isProcessingText}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 p-2 bg-cyan-500 text-slate-900 rounded-lg hover:bg-cyan-400 disabled:opacity-50 disabled:hover:bg-cyan-500 transition-colors"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-2 bg-teal-primary text-white rounded-lg hover:bg-teal-600 disabled:opacity-50 disabled:hover:bg-teal-primary transition-colors"
                 >
                     {isProcessingText ? <Loader2 size={18} className="animate-spin"/> : <Send size={18} />}
                 </button>
