@@ -26,3 +26,7 @@ dist-ssr
 CLAUDE.md
 package-lock.json
 
+# Service account credentials (NEVER commit)
+service-account.json
+*.json.key
+

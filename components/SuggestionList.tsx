@@ -1,5 +1,5 @@
 import React from 'react';
-import { Suggestion } from '../types';
+import { Suggestion, SuggestionItem } from '../types';
 import { Lightbulb, ShoppingBag, Utensils, Search, ExternalLink } from 'lucide-react';
 
 interface Props {
@@ -16,14 +16,22 @@ export const SuggestionList: React.FC<Props> = ({ suggestions }) => {
     }
   };
 
-  const getLink = (item: string, category: string) => {
-    if (item.startsWith('http')) return item;
-
-    if (['Restaurant', 'Shopping', 'Place'].includes(category)) {
-        return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(item)}`;
+  // Normalize item to SuggestionItem format (handles both string and object)
+  const normalizeItem = (item: SuggestionItem | string): SuggestionItem => {
+    if (typeof item === 'string') {
+      // Legacy string item - check if it's a URL
+      if (item.startsWith('http')) {
+        return { text: item, url: item, linkType: 'website' };
+      }
+      return { text: item };
     }
+    return item;
+  };
 
-    return `https://www.google.com/search?q=${encodeURIComponent(item)}`;
+  // Get display URL - use agent-provided URL or fall back to Google Search
+  const getUrl = (item: SuggestionItem): string => {
+    if (item.url) return item.url;
+    return `https://www.google.com/search?q=${encodeURIComponent(item.text)}`;
   };
 
   return (
@@ -51,20 +59,21 @@ export const SuggestionList: React.FC<Props> = ({ suggestions }) => {
             </div>
             <ul className="space-y-1">
                 {s.items.map((item, idx) => {
-                    const link = getLink(item, s.category);
-                    const isUrl = item.startsWith('http');
-                    const display = isUrl ? new URL(item).hostname : item;
+                    const itemData = normalizeItem(item);
+                    const url = getUrl(itemData);
+                    const isRawUrl = itemData.text.startsWith('http');
+                    const display = isRawUrl ? new URL(itemData.text).hostname : itemData.text;
 
                     return (
                         <li key={idx} className="group">
                             <a
-                                href={link}
+                                href={url}
                                 target="_blank"
                                 rel="noreferrer"
                                 className="flex items-center gap-2 p-2 -mx-1 rounded-lg hover:bg-teal-50 active:bg-teal-100 transition-colors cursor-pointer"
                             >
                                 <span className="block w-1.5 h-1.5 rounded-full bg-teal-primary flex-shrink-0"></span>
-                                <span className={`text-sm flex-1 ${isUrl ? "text-teal-primary" : "text-gray-700"}`}>{display}</span>
+                                <span className={`text-sm flex-1 ${isRawUrl ? "text-teal-primary" : "text-gray-700"}`}>{display}</span>
                                 <ExternalLink size={14} className="text-gray-400 group-hover:text-teal-primary transition-colors flex-shrink-0" />
                             </a>
                         </li>

@@ -31,11 +31,17 @@ export interface Alert {
   severity: 'info' | 'warning' | 'critical';
 }
 
+export interface SuggestionItem {
+  text: string;           // Display name (e.g., "Feta Cheese")
+  url?: string;           // Optional custom URL from agent
+  linkType?: 'google_search' | 'google_maps' | 'store' | 'app' | 'website';
+}
+
 export interface Suggestion {
   id: string;
   title: string;
   category: 'Restaurant' | 'Research' | 'Shopping' | 'Other';
-  items: string[];
+  items: (SuggestionItem | string)[];  // Support both structured and legacy string items
 }
 
 export interface MessageDraft {
@@ -102,13 +108,25 @@ export const TOOLS_DECLARATION: FunctionDeclaration[] = [
   },
   {
     name: "save_suggestion",
-    description: "Save a list of suggestions or research findings (e.g., Recommended Restaurants, Shopping Lists).",
+    description: "Save a list of suggestions or research findings. Provide intelligent links based on item context and user preferences.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         title: { type: Type.STRING, description: "Title of the suggestion list." },
         category: { type: Type.STRING, enum: ["Restaurant", "Research", "Shopping", "Other"] },
-        items: { type: Type.ARRAY, items: { type: Type.STRING }, description: "List of items/findings." }
+        items: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              text: { type: Type.STRING, description: "Item name/display text" },
+              url: { type: Type.STRING, description: "Full URL. Required for actionable items. Use user preferences to choose appropriate stores/platforms." },
+              linkType: { type: Type.STRING, enum: ["google_search", "google_maps", "store", "app", "website"], description: "Type of link for UI hints" }
+            },
+            required: ["text"]
+          },
+          description: "List of items with optional intelligent URLs."
+        }
       },
       required: ["title", "category", "items"]
     }
@@ -210,4 +228,29 @@ If a user implies an event exists (e.g., "Ayan's class") but you cannot find it 
    - **High**: Time-sensitive, Conflicts, Missing Info.
    - **Medium**: "This week".
    - **Low**: "Eventually".
+
+**SUGGESTION & LINK INTELLIGENCE PROTOCOL**:
+When using \`save_suggestion\`, provide intelligent URLs based on context and user preferences:
+
+1. **Context-Aware Link Selection**:
+   - Restaurants/Places: Google Maps URL
+   - Grocery/Food items: User's preferred grocery store website OR Google Shopping
+   - Products: User's preferred shopping platform (Amazon, Target, etc.)
+   - Research topics: Google Search
+   - Services: Relevant app/website (Uber, Yelp, etc.)
+
+2. **User Preference Integration**:
+   - Check Long Term Memory for store/platform preferences
+   - Examples: "Store Preference: Whole Foods" → use wholefoodsmarket.com
+   - "Shopping Platform: Amazon" → use amazon.com/s?k={item}
+   - If no preference, default to Google Search
+
+3. **URL Format Examples**:
+   - Google Search: https://www.google.com/search?q={encoded_item}
+   - Google Maps: https://www.google.com/maps/search/?api=1&query={encoded_item}
+   - Amazon: https://www.amazon.com/s?k={encoded_item}
+   - Whole Foods: https://www.wholefoodsmarket.com/search?text={encoded_item}
+   - Target: https://www.target.com/s?searchTerm={encoded_item}
+
+4. **Provide URLs When Applicable**: Include a url field for actionable items where a link adds value. Skip URLs for items that don't benefit from linking (e.g., abstract concepts, reminders).
 `;

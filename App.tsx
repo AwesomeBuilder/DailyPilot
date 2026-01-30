@@ -309,7 +309,12 @@ function App() {
             id: Date.now().toString() + Math.random(),
             title: args.title,
             category: args.category,
-            items: args.items
+            // Normalize items: support both legacy strings and new structured objects
+            items: args.items.map((item: any) =>
+                typeof item === 'string'
+                    ? { text: item }  // Backward compatibility for plain strings
+                    : item            // Use structured object from agent
+            )
         };
         setSuggestions(prev => [...prev, newSuggestion]);
         setLogs(prev => [...prev, {
@@ -370,6 +375,47 @@ function App() {
         console.warn(`Unknown tool called: ${name}`);
         return { error: 'Unknown tool' };
     }
+  }, []);
+
+  // --- CRUD Handlers for Tasks ---
+  const handleUpdateTask = useCallback((id: string, updates: Partial<Task>) => {
+    setTasks(prev => prev.map(task =>
+      task.id === id ? { ...task, ...updates } : task
+    ));
+  }, []);
+
+  const handleDeleteTask = useCallback((id: string) => {
+    setTasks(prev => prev.filter(task => task.id !== id));
+  }, []);
+
+  // --- CRUD Handlers for Events ---
+  const handleUpdateEvent = useCallback((id: string, updates: Partial<CalendarEvent>) => {
+    setEvents(prev => prev.map(event =>
+      event.id === id ? { ...event, ...updates } : event
+    ));
+  }, []);
+
+  const handleDeleteEvent = useCallback((id: string) => {
+    setEvents(prev => prev.filter(event => event.id !== id));
+  }, []);
+
+  const handleAddEvent = useCallback((event: Omit<CalendarEvent, 'id'>) => {
+    const newEvent: CalendarEvent = {
+      ...event,
+      id: Date.now().toString() + Math.random(),
+    };
+    setEvents(prev => [...prev, newEvent]);
+  }, []);
+
+  // --- CRUD Handlers for Drafts ---
+  const handleUpdateDraft = useCallback((id: string, updates: Partial<MessageDraft>) => {
+    setDrafts(prev => prev.map(draft =>
+      draft.id === id ? { ...draft, ...updates } : draft
+    ));
+  }, []);
+
+  const handleDeleteDraft = useCallback((id: string) => {
+    setDrafts(prev => prev.filter(draft => draft.id !== id));
   }, []);
 
   // --- Lifecycle & Connectivity ---
@@ -663,10 +709,10 @@ function App() {
           {/* Content Panel - Slides in from right */}
           {displayedView !== 'home' && (
             <div key={displayedView} className={`content-panel absolute top-0 right-4 w-[48%] max-w-xl h-[50vh] md:h-[60vh] hidden md:block ${isPanelExiting ? 'slide-out-right z-0' : 'slide-in-right z-10'}`}>
-              {displayedView === 'tasks' && <TaskList tasks={tasks} />}
-              {displayedView === 'calendar' && <CalendarView events={events} tasks={tasks} />}
+              {displayedView === 'tasks' && <TaskList tasks={tasks} onUpdateTask={handleUpdateTask} onDeleteTask={handleDeleteTask} />}
+              {displayedView === 'calendar' && <CalendarView events={events} tasks={tasks} onUpdateEvent={handleUpdateEvent} onDeleteEvent={handleDeleteEvent} onAddEvent={handleAddEvent} />}
               {displayedView === 'notes' && <ReasoningLog logs={logs} />}
-              {displayedView === 'drafts' && <MessageDraftList drafts={drafts} />}
+              {displayedView === 'drafts' && <MessageDraftList drafts={drafts} onUpdateDraft={handleUpdateDraft} onDeleteDraft={handleDeleteDraft} />}
               {displayedView === 'suggestions' && <SuggestionList suggestions={suggestions} />}
             </div>
           )}
@@ -685,10 +731,10 @@ function App() {
             <div className="w-12 h-1.5 bg-gray-300 rounded-full" />
           </button>
           <div className="h-[calc(100%-32px)] px-4 pb-4 overflow-auto">
-            {activeView === 'tasks' && <TaskList tasks={tasks} />}
-            {activeView === 'calendar' && <CalendarView events={events} tasks={tasks} />}
+            {activeView === 'tasks' && <TaskList tasks={tasks} onUpdateTask={handleUpdateTask} onDeleteTask={handleDeleteTask} />}
+            {activeView === 'calendar' && <CalendarView events={events} tasks={tasks} onUpdateEvent={handleUpdateEvent} onDeleteEvent={handleDeleteEvent} onAddEvent={handleAddEvent} />}
             {activeView === 'notes' && <ReasoningLog logs={logs} />}
-            {activeView === 'drafts' && <MessageDraftList drafts={drafts} />}
+            {activeView === 'drafts' && <MessageDraftList drafts={drafts} onUpdateDraft={handleUpdateDraft} onDeleteDraft={handleDeleteDraft} />}
             {activeView === 'suggestions' && <SuggestionList suggestions={suggestions} />}
           </div>
         </div>
