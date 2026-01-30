@@ -32,7 +32,7 @@ export const ReasoningLog: React.FC<Props> = ({ logs }) => {
       <div className="flex-1 overflow-y-auto p-4 space-y-3 scrollbar-hide">
         {logs.length === 0 && (
           <div className="text-gray-400 text-center italic mt-10">
-            Waiting for input...
+            Chain of thought...
           </div>
         )}
         {logs.map((log) => (

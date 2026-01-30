@@ -8,7 +8,7 @@ import { CalendarView } from './components/CalendarView';
 import { SuggestionList } from './components/SuggestionList';
 import { MessageDraftList } from './components/MessageDraftList';
 import { FabricWave3D } from './components/FabricWave3D';
-import { AlertCircle, X, Menu, Mic, ClipboardList, Calendar, ListChecks, FileText, Lightbulb, Keyboard, Send, Loader2 } from 'lucide-react';
+import { AlertCircle, X, Menu, Mic, CheckSquare, Calendar, BrainCircuit, MessageSquare, Lightbulb, Keyboard, Send, Loader2 } from 'lucide-react';
 
 type ViewType = 'home' | 'tasks' | 'calendar' | 'notes' | 'drafts' | 'suggestions';
 
@@ -20,6 +20,8 @@ function App() {
   const [isProcessingText, setIsProcessingText] = useState(false);
   const [userLocation, setUserLocation] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<ViewType>('home');
+  const [displayedView, setDisplayedView] = useState<ViewType>('home');
+  const [isPanelExiting, setIsPanelExiting] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [inputMode, setInputMode] = useState<'voice' | 'text'>('voice');
   const [textInput, setTextInput] = useState('');
@@ -72,6 +74,23 @@ function App() {
         setUserLocation("San Francisco, CA (Default)");
     }
   }, []);
+
+  // Handle panel exit animation
+  useEffect(() => {
+    if (activeView === 'home' && displayedView !== 'home') {
+      // Panel is closing - trigger exit animation
+      setIsPanelExiting(true);
+      const timer = setTimeout(() => {
+        setDisplayedView('home');
+        setIsPanelExiting(false);
+      }, 500); // Match animation duration
+      return () => clearTimeout(timer);
+    } else if (activeView !== 'home') {
+      // Panel is opening or switching
+      setDisplayedView(activeView);
+      setIsPanelExiting(false);
+    }
+  }, [activeView, displayedView]);
 
   // --- Tool Logic ---
 
@@ -434,15 +453,15 @@ function App() {
     }
   };
 
-  // Get recent thoughts for chain of thought display
-  const recentThoughts = logs.slice(-3).reverse();
+  // Get recent thoughts for chain of thought display (show more since area is scrollable)
+  const recentThoughts = logs.slice(-8).reverse();
 
-  // Navigation items
+  // Navigation items - icons match the component card headers
   const navItems = [
-    { id: 'tasks' as ViewType, icon: ClipboardList, label: 'Tasks', count: tasks.length },
+    { id: 'tasks' as ViewType, icon: CheckSquare, label: 'Tasks', count: tasks.length },
     { id: 'calendar' as ViewType, icon: Calendar, label: 'Calendar', count: events.length },
-    { id: 'notes' as ViewType, icon: ListChecks, label: 'Notes', count: logs.length },
-    { id: 'drafts' as ViewType, icon: FileText, label: 'Drafts', count: drafts.length },
+    { id: 'notes' as ViewType, icon: BrainCircuit, label: 'Notes', count: logs.length },
+    { id: 'drafts' as ViewType, icon: MessageSquare, label: 'Drafts', count: drafts.length },
     { id: 'suggestions' as ViewType, icon: Lightbulb, label: 'Ideas', count: suggestions.length },
   ];
 
@@ -510,36 +529,33 @@ function App() {
       )}
 
       {/* Main Content Area */}
-      <main className="flex-1 flex flex-col items-center justify-center px-4 pb-24 md:pb-28">
+      <main className="flex-1 flex items-center justify-center px-4 pb-24 md:pb-28 overflow-hidden">
+        <div className="relative flex items-center justify-center w-full max-w-6xl">
 
-        {activeView === 'home' && (
-          <>
-            {/* Chain of Thought Display */}
-            <div className="w-full max-w-md md:max-w-lg text-left mb-4 md:mb-6 min-h-[60px]">
-              {recentThoughts.length > 0 ? (
+          {/* Voice Control Panel - Always Visible */}
+          <div className={`voice-panel flex flex-col items-center w-full max-w-lg flex-shrink-0 z-20 ${isPanelExiting ? 'delayed-return' : ''} ${activeView !== 'home' ? 'md:-translate-x-[55%]' : 'translate-x-0'}`}>
+            {/* Chain of Thought Display - Only shows when there are logs */}
+            {recentThoughts.length > 0 && (
+              <div className="w-full max-w-md md:max-w-lg text-left mb-4 md:mb-6 max-h-[120px] overflow-y-auto scrollbar-hide fade-in">
                 <div className="space-y-1">
                   {recentThoughts.map((log, idx) => (
                     <p
                       key={log.id}
-                      className={`text-sm md:text-base line-clamp-1 transition-opacity ${
+                      className={`text-sm line-clamp-1 transition-opacity ${
                         idx === 0
-                          ? 'text-teal-dark font-medium'
+                          ? 'text-teal-dark font-medium md:text-base'
                           : idx === 1
-                          ? 'text-gray-500 italic text-sm'
+                          ? 'text-gray-500 italic'
                           : 'text-gray-400 italic text-xs'
                       }`}
-                      style={{ opacity: 1 - idx * 0.3 }}
+                      style={{ opacity: Math.max(0.3, 1 - idx * 0.15) }}
                     >
                       {log.content}
                     </p>
                   ))}
                 </div>
-              ) : (
-                <p className="text-gray-400 italic text-sm md:text-base">
-                  Chain of thought...
-                </p>
-              )}
-            </div>
+              </div>
+            )}
 
             {/* Wave Container with Mic/Input */}
             <div className="relative w-full max-w-md md:max-w-lg aspect-square md:aspect-[4/3]">
@@ -619,40 +635,41 @@ function App() {
                 {isProcessingText ? 'Processing...' : isRecording ? 'Listening...' : inputMode === 'voice' ? (isConnected ? 'Tap to speak' : 'Tap microphone to start') : 'Type and press enter'}
               </p>
             </div>
-          </>
-        )}
-
-        {/* View Panels */}
-        {activeView === 'tasks' && (
-          <div className="w-full max-w-2xl h-[60vh] slide-up">
-            <TaskList tasks={tasks} />
           </div>
-        )}
 
-        {activeView === 'calendar' && (
-          <div className="w-full max-w-2xl h-[60vh] slide-up">
-            <CalendarView events={events} tasks={tasks} />
-          </div>
-        )}
+          {/* Content Panel - Slides in from right */}
+          {displayedView !== 'home' && (
+            <div key={displayedView} className={`content-panel absolute top-0 right-4 w-[48%] max-w-xl h-[50vh] md:h-[60vh] hidden md:block ${isPanelExiting ? 'slide-out-right z-0' : 'slide-in-right z-10'}`}>
+              {displayedView === 'tasks' && <TaskList tasks={tasks} />}
+              {displayedView === 'calendar' && <CalendarView events={events} tasks={tasks} />}
+              {displayedView === 'notes' && <ReasoningLog logs={logs} />}
+              {displayedView === 'drafts' && <MessageDraftList drafts={drafts} />}
+              {displayedView === 'suggestions' && <SuggestionList suggestions={suggestions} />}
+            </div>
+          )}
+        </div>
 
-        {activeView === 'notes' && (
-          <div className="w-full max-w-2xl h-[60vh] slide-up">
-            <ReasoningLog logs={logs} />
-          </div>
-        )}
-
-        {activeView === 'drafts' && (
-          <div className="w-full max-w-2xl h-[60vh] slide-up">
-            <MessageDraftList drafts={drafts} />
-          </div>
-        )}
-
-        {activeView === 'suggestions' && (
-          <div className="w-full max-w-2xl h-[60vh] slide-up">
-            <SuggestionList suggestions={suggestions} />
-          </div>
-        )}
       </main>
+
+      {/* Mobile Content Panel - Slides up from bottom on small screens */}
+      {activeView !== 'home' && (
+        <div key={`mobile-${activeView}`} className="md:hidden fixed bottom-20 left-0 right-0 h-[50vh] bg-white rounded-t-3xl shadow-2xl slide-up z-20 overflow-hidden">
+          {/* Drag handle indicator */}
+          <button
+            onClick={() => setActiveView('home')}
+            className="w-full pt-3 pb-2 flex justify-center cursor-pointer hover:bg-gray-50 transition-colors"
+          >
+            <div className="w-12 h-1.5 bg-gray-300 rounded-full" />
+          </button>
+          <div className="h-[calc(100%-32px)] px-4 pb-4 overflow-auto">
+            {activeView === 'tasks' && <TaskList tasks={tasks} />}
+            {activeView === 'calendar' && <CalendarView events={events} tasks={tasks} />}
+            {activeView === 'notes' && <ReasoningLog logs={logs} />}
+            {activeView === 'drafts' && <MessageDraftList drafts={drafts} />}
+            {activeView === 'suggestions' && <SuggestionList suggestions={suggestions} />}
+          </div>
+        </div>
+      )}
 
       {/* Bottom Navigation */}
       <nav className="fixed bottom-4 left-1/2 -translate-x-1/2 z-30">
