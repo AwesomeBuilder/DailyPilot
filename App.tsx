@@ -91,8 +91,8 @@ function App() {
   // Auto-show Chain of Thought panel when new logs arrive
   useEffect(() => {
     if (logs.length > prevLogCountRef.current) {
-      // New logs have been added - auto-show the notes panel if not already showing
-      if (activeView === 'home') {
+      // New logs have been added - auto-switch to notes panel from any view
+      if (activeView !== 'notes') {
         setActiveView('notes');
       }
     }
