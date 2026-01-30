@@ -34,6 +34,19 @@ function App() {
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [drafts, setDrafts] = useState<MessageDraft[]>([]);
 
+  // Badge tracking - store counts when panel was last viewed
+  const [seenCounts, setSeenCounts] = useState<Record<ViewType, number>>({
+    home: 0,
+    tasks: 0,
+    calendar: 0,
+    notes: 0,
+    drafts: 0,
+    suggestions: 0,
+  });
+
+  // Track previous log count to detect new logs
+  const prevLogCountRef = useRef(0);
+
   // Long Term Memory (User Profile)
   const [userProfile, setUserProfile] = useState<Record<string, string>>({});
 
@@ -75,7 +88,18 @@ function App() {
     }
   }, []);
 
-  // Handle panel exit animation
+  // Auto-show Chain of Thought panel when new logs arrive
+  useEffect(() => {
+    if (logs.length > prevLogCountRef.current) {
+      // New logs have been added - auto-show the notes panel if not already showing
+      if (activeView === 'home') {
+        setActiveView('notes');
+      }
+    }
+    prevLogCountRef.current = logs.length;
+  }, [logs.length, activeView]);
+
+  // Handle panel exit animation and badge reset
   useEffect(() => {
     if (activeView === 'home' && displayedView !== 'home') {
       // Panel is closing - trigger exit animation
@@ -86,11 +110,21 @@ function App() {
       }, 500); // Match animation duration
       return () => clearTimeout(timer);
     } else if (activeView !== 'home') {
-      // Panel is opening or switching
+      // Panel is opening or switching - mark as seen after a brief delay (user scrolled/viewed)
       setDisplayedView(activeView);
       setIsPanelExiting(false);
+
+      // Reset badge for this view by updating seen counts
+      const currentCount =
+        activeView === 'tasks' ? tasks.length :
+        activeView === 'calendar' ? events.length :
+        activeView === 'notes' ? logs.length :
+        activeView === 'drafts' ? drafts.length :
+        activeView === 'suggestions' ? suggestions.length : 0;
+
+      setSeenCounts(prev => ({ ...prev, [activeView]: currentCount }));
     }
-  }, [activeView, displayedView]);
+  }, [activeView, displayedView, tasks.length, events.length, logs.length, drafts.length, suggestions.length]);
 
   // --- Tool Logic ---
 
@@ -380,6 +414,7 @@ function App() {
   const handleTextSubmit = async (text: string) => {
     setIsProcessingText(true);
     setError(null);
+
     setLogs(prev => [...prev, {
         id: Date.now().toString(),
         timestamp: new Date(),
@@ -388,11 +423,13 @@ function App() {
     }]);
 
     try {
-        const history = logs
-            .filter(l => l.type === 'reasoning')
-            .slice(-6)
+        // Build history from reasoning logs (captures both voice actions and text inputs)
+        const historyFromLogs = logs
+            .slice(-10)
             .map(l => {
-                if (l.content.startsWith('User Input: ')) return `User: ${l.content.replace('User Input: ', '')}`;
+                if (l.content.startsWith('User Input:') || l.content.startsWith('Voice Input:')) {
+                    return `User: ${l.content.replace(/^(User|Voice) Input: "?/, '').replace(/"$/, '')}`;
+                }
                 return `Agent: ${l.content}`;
             })
             .join('\n');
@@ -409,8 +446,8 @@ function App() {
         [LONG TERM MEMORY / USER PREFERENCES]
         ${Object.keys(userProfile).length > 0 ? JSON.stringify(userProfile, null, 2) : "No learned preferences yet."}
 
-        [CONVERSATION HISTORY (Last few turns)]
-        ${history}
+        [CONVERSATION HISTORY (Last few turns - includes both voice and text inputs)]
+        ${historyFromLogs}
 
         [CURRENT REQUEST]
         ${text}
@@ -418,7 +455,7 @@ function App() {
 
         const response = await processTextPrompt(contextString, handleToolCall);
 
-        const textPart = response.candidates?.[0]?.content?.parts?.find(p => p.text);
+        const textPart = response.candidates?.[0]?.content?.parts?.find((p: any) => p.text);
 
         if (textPart && textPart.text) {
              setLogs(prev => [...prev, {
@@ -453,16 +490,25 @@ function App() {
     }
   };
 
-  // Get recent thoughts for chain of thought display (show more since area is scrollable)
-  const recentThoughts = logs.slice(-8).reverse();
+  // Calculate unseen counts for badges
+  const getUnseenCount = (viewType: ViewType) => {
+    const currentCount =
+      viewType === 'tasks' ? tasks.length :
+      viewType === 'calendar' ? events.length :
+      viewType === 'notes' ? logs.length :
+      viewType === 'drafts' ? drafts.length :
+      viewType === 'suggestions' ? suggestions.length : 0;
+    const seen = seenCounts[viewType] || 0;
+    return Math.max(0, currentCount - seen);
+  };
 
-  // Navigation items - icons match the component card headers
+  // Navigation items - icons match the component card headers, show unseen counts
   const navItems = [
-    { id: 'tasks' as ViewType, icon: CheckSquare, label: 'Tasks', count: tasks.length },
-    { id: 'calendar' as ViewType, icon: Calendar, label: 'Calendar', count: events.length },
-    { id: 'notes' as ViewType, icon: BrainCircuit, label: 'Notes', count: logs.length },
-    { id: 'drafts' as ViewType, icon: MessageSquare, label: 'Drafts', count: drafts.length },
-    { id: 'suggestions' as ViewType, icon: Lightbulb, label: 'Ideas', count: suggestions.length },
+    { id: 'tasks' as ViewType, icon: CheckSquare, label: 'Tasks', count: getUnseenCount('tasks') },
+    { id: 'calendar' as ViewType, icon: Calendar, label: 'Calendar', count: getUnseenCount('calendar') },
+    { id: 'notes' as ViewType, icon: BrainCircuit, label: 'Notes', count: getUnseenCount('notes') },
+    { id: 'drafts' as ViewType, icon: MessageSquare, label: 'Drafts', count: getUnseenCount('drafts') },
+    { id: 'suggestions' as ViewType, icon: Lightbulb, label: 'Ideas', count: getUnseenCount('suggestions') },
   ];
 
   return (
@@ -534,29 +580,6 @@ function App() {
 
           {/* Voice Control Panel - Always Visible */}
           <div className={`voice-panel flex flex-col items-center w-full max-w-lg flex-shrink-0 z-20 ${isPanelExiting ? 'delayed-return' : ''} ${activeView !== 'home' ? 'md:-translate-x-[55%]' : 'translate-x-0'}`}>
-            {/* Chain of Thought Display - Only shows when there are logs */}
-            {recentThoughts.length > 0 && (
-              <div className="w-full max-w-md md:max-w-lg text-left mb-4 md:mb-6 max-h-[120px] overflow-y-auto scrollbar-hide fade-in">
-                <div className="space-y-1">
-                  {recentThoughts.map((log, idx) => (
-                    <p
-                      key={log.id}
-                      className={`text-sm line-clamp-1 transition-opacity ${
-                        idx === 0
-                          ? 'text-teal-dark font-medium md:text-base'
-                          : idx === 1
-                          ? 'text-gray-500 italic'
-                          : 'text-gray-400 italic text-xs'
-                      }`}
-                      style={{ opacity: Math.max(0.3, 1 - idx * 0.15) }}
-                    >
-                      {log.content}
-                    </p>
-                  ))}
-                </div>
-              </div>
-            )}
-
             {/* Wave Container with Mic/Input */}
             <div className="relative w-full max-w-md md:max-w-lg aspect-square md:aspect-[4/3]">
               {/* Wave Background */}

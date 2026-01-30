@@ -1,4 +1,4 @@
-import { GoogleGenAI, LiveServerMessage, Modality } from "@google/genai";
+import { GoogleGenAI, LiveServerMessage, Modality, StartSensitivity, EndSensitivity } from "@google/genai";
 import { TOOLS_DECLARATION, SYSTEM_INSTRUCTION } from "../types";
 
 // Types for callbacks
@@ -20,6 +20,7 @@ export class LiveManager {
   private mediaStream: MediaStream | null = null;
   private nextStartTime = 0;
   private sources = new Set<AudioBufferSourceNode>();
+
   
   private onToolCall: ToolHandler;
   private onStatusChange: StatusHandler;
@@ -53,7 +54,7 @@ export class LiveManager {
 
     try {
       this.manuallyDisconnecting = false;
-      
+
       // Initialize Contexts
       // We must strictly request 16000 sample rate for the input to match the API requirement.
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
@@ -65,16 +66,27 @@ export class LiveManager {
         config: {
           responseModalities: [Modality.AUDIO],
           systemInstruction: SYSTEM_INSTRUCTION,
-          tools: [{ 
+          tools: [{
             functionDeclarations: TOOLS_DECLARATION
           }],
+          // VAD settings for longer sessions - less sensitive to end speech
+          realtimeInputConfig: {
+            automaticActivityDetection: {
+              disabled: false,
+              startOfSpeechSensitivity: StartSensitivity.START_SENSITIVITY_LOW,
+              endOfSpeechSensitivity: EndSensitivity.END_SENSITIVITY_LOW,
+              prefixPaddingMs: 100,
+              silenceDurationMs: 1500,
+            }
+          },
         },
         callbacks: {
           onopen: () => {
             this.isConnected = true;
             this.onStatusChange(true);
-            // We start audio immediately but user might have mic muted in UI. 
-            // In this app flow, we want to start mic immediately upon connect.
+            // Reset reconnect attempts on successful connection
+            this.reconnectAttempts = 0;
+            // Start audio immediately upon connect
             this.startAudio();
           },
           onmessage: this.handleMessage.bind(this),
@@ -131,7 +143,7 @@ export class LiveManager {
         if (!this.isMicActive || this.manuallyDisconnecting) return;
 
         const inputData = e.inputBuffer.getChannelData(0);
-        
+
         // Calculate volume for visualizer
         let sum = 0;
         for (let i = 0; i < inputData.length; i++) {
@@ -141,7 +153,7 @@ export class LiveManager {
         this.onVolume(rms);
 
         const pcmBlob = this.createBlob(inputData);
-        
+
         this.sessionPromise?.then((session) => {
           if (this.isMicActive && !this.manuallyDisconnecting) {
              try {

@@ -49,23 +49,23 @@ export const SuggestionList: React.FC<Props> = ({ suggestions }) => {
                 {getIcon(s.category)}
                 <h3 className="text-sm font-medium text-teal-dark">{s.title}</h3>
             </div>
-            <ul className="space-y-1.5 pl-1">
+            <ul className="space-y-1">
                 {s.items.map((item, idx) => {
                     const link = getLink(item, s.category);
                     const isUrl = item.startsWith('http');
                     const display = isUrl ? new URL(item).hostname : item;
 
                     return (
-                        <li key={idx} className="text-xs text-gray-600 flex items-start gap-2 group">
-                            <span className="block w-1 h-1 mt-1.5 rounded-full bg-gray-400 flex-shrink-0"></span>
+                        <li key={idx} className="group">
                             <a
                                 href={link}
                                 target="_blank"
                                 rel="noreferrer"
-                                className="flex items-center gap-1 hover:text-teal-primary transition-colors break-all"
+                                className="flex items-center gap-2 p-2 -mx-1 rounded-lg hover:bg-teal-50 active:bg-teal-100 transition-colors cursor-pointer"
                             >
-                                <span className={isUrl ? "text-teal-primary" : ""}>{display}</span>
-                                <ExternalLink size={10} className="opacity-0 group-hover:opacity-100 transition-opacity" />
+                                <span className="block w-1.5 h-1.5 rounded-full bg-teal-primary flex-shrink-0"></span>
+                                <span className={`text-sm flex-1 ${isUrl ? "text-teal-primary" : "text-gray-700"}`}>{display}</span>
+                                <ExternalLink size={14} className="text-gray-400 group-hover:text-teal-primary transition-colors flex-shrink-0" />
                             </a>
                         </li>
                     );
