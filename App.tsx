@@ -8,9 +8,13 @@ import { CalendarView } from './components/CalendarView';
 import { SuggestionList } from './components/SuggestionList';
 import { MessageDraftList } from './components/MessageDraftList';
 import { FabricWave3D } from './components/FabricWave3D';
+import { GoogleSignIn } from './components/GoogleSignIn';
+import { useAuth } from './hooks/useAuth';
 import { AlertCircle, X, Menu, Mic, CheckSquare, Calendar, BrainCircuit, MessageSquare, Lightbulb, Keyboard, Send, Loader2 } from 'lucide-react';
 
 type ViewType = 'home' | 'tasks' | 'calendar' | 'notes' | 'drafts' | 'suggestions';
+
+const API_BASE = 'http://localhost:3001';
 
 function App() {
   const [isConnected, setIsConnected] = useState(false);
@@ -25,6 +29,9 @@ function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [inputMode, setInputMode] = useState<'voice' | 'text'>('voice');
   const [textInput, setTextInput] = useState('');
+
+  // Google OAuth authentication
+  const { isAuthenticated, isLoading: authLoading, error: authError, login, logout, clearError } = useAuth();
 
   // State
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -134,8 +141,93 @@ function App() {
     return (new Date(date.getTime() - offset)).toISOString().slice(0, -1);
   };
 
-  // Mock Calendar Data Source (Dynamic based on Dummy Data)
-  const searchCalendar = (query: string) => {
+  // Fetch calendar events from Google Calendar API
+  const fetchCalendarFromAPI = async (query: string): Promise<CalendarEvent[]> => {
+    try {
+      const now = new Date();
+      const timeMin = now.toISOString();
+      const timeMax = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+      const params = new URLSearchParams({
+        query,
+        timeMin,
+        timeMax,
+      });
+
+      const response = await fetch(`${API_BASE}/api/calendar/events?${params}`, {
+        credentials: 'include',
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch calendar events');
+      }
+
+      const data = await response.json();
+      return data.events || [];
+    } catch (error) {
+      console.error('Calendar API error:', error);
+      return [];
+    }
+  };
+
+  // Create event in Google Calendar
+  const createCalendarEvent = async (event: {
+    title: string;
+    description?: string;
+    start: string;
+    duration: string;
+    location?: string;
+  }): Promise<{ success: boolean; event?: CalendarEvent; error?: string }> => {
+    try {
+      const response = await fetch(`${API_BASE}/api/calendar/events`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(event),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to create event');
+      }
+
+      const data = await response.json();
+      return { success: true, event: data.event };
+    } catch (error: any) {
+      console.error('Calendar create error:', error);
+      return { success: false, error: error.message };
+    }
+  };
+
+  // Create task in Google Tasks
+  const createGoogleTask = async (task: {
+    title: string;
+    description?: string;
+    deadline?: string;
+  }): Promise<{ success: boolean; task?: Task; error?: string }> => {
+    try {
+      const response = await fetch(`${API_BASE}/api/tasks/@default`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(task),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to create task');
+      }
+
+      const data = await response.json();
+      return { success: true, task: data.task };
+    } catch (error: any) {
+      console.error('Task create error:', error);
+      return { success: false, error: error.message };
+    }
+  };
+
+  // Mock Calendar Data Source (Dynamic based on Dummy Data) - fallback when not authenticated
+  const searchCalendarMock = (query: string) => {
     const q = query.toLowerCase();
     const today = new Date();
 
@@ -241,6 +333,14 @@ function App() {
     return results;
   };
 
+  // Combined search function - uses API if authenticated, mock otherwise
+  const searchCalendar = async (query: string): Promise<CalendarEvent[]> => {
+    if (isAuthenticated) {
+      return await fetchCalendarFromAPI(query);
+    }
+    return searchCalendarMock(query);
+  };
+
   const handleToolCall = useCallback(async (name: string, args: any) => {
     switch (name) {
       case 'log_thought':
@@ -253,7 +353,7 @@ function App() {
         return { success: true };
 
       case 'get_calendar_events':
-        const foundEvents = searchCalendar(args.query);
+        const foundEvents = await searchCalendar(args.query);
         setEvents(prev => {
             const existingIds = new Set(prev.map(e => e.id));
             const newEvents = foundEvents.filter(e => !existingIds.has(e.id));
@@ -263,14 +363,28 @@ function App() {
         setLogs(prev => [...prev, {
             id: Date.now().toString() + '-check',
             timestamp: new Date(),
-            content: `Checked Calendar for "${args.query}". Found ${foundEvents.length} events.`,
+            content: `Checked Calendar for "${args.query}". Found ${foundEvents.length} events.${isAuthenticated ? ' (Google Calendar)' : ' (Demo Data)'}`,
             type: 'reasoning'
         }]);
         return { events: foundEvents };
 
       case 'add_task':
+        // If authenticated, also create in Google Tasks
+        let taskId = Date.now().toString() + Math.random();
+
+        if (isAuthenticated) {
+          const result = await createGoogleTask({
+            title: args.title,
+            description: args.description,
+            deadline: args.deadline,
+          });
+          if (result.success && result.task) {
+            taskId = result.task.id;
+          }
+        }
+
         const newTask: Task = {
-          id: Date.now().toString() + Math.random(),
+          id: taskId,
           title: args.title,
           description: args.description,
           priority: args.priority,
@@ -281,28 +395,44 @@ function App() {
         setLogs(prev => [...prev, {
             id: Date.now().toString() + '-action',
             timestamp: new Date(),
-            content: `Created Task: ${newTask.title} (${newTask.priority})`,
+            content: `Created Task: ${newTask.title} (${newTask.priority})${isAuthenticated ? ' - Synced to Google Tasks' : ''}`,
             type: 'action'
         }]);
         return { success: true, taskId: newTask.id };
 
       case 'add_event':
-        const newEvent: CalendarEvent = {
-          id: Date.now().toString() + Math.random(),
+        let eventId = Date.now().toString() + Math.random();
+        let eventData: CalendarEvent = {
+          id: eventId,
           title: args.title,
           description: args.description,
           start: args.start,
           duration: args.duration,
           location: args.location,
         };
-        setEvents(prev => [...prev, newEvent]);
-         setLogs(prev => [...prev, {
+
+        // If authenticated, create in Google Calendar
+        if (isAuthenticated) {
+          const result = await createCalendarEvent({
+            title: args.title,
+            description: args.description,
+            start: args.start,
+            duration: args.duration,
+            location: args.location,
+          });
+          if (result.success && result.event) {
+            eventData = result.event;
+          }
+        }
+
+        setEvents(prev => [...prev, eventData]);
+        setLogs(prev => [...prev, {
             id: Date.now().toString() + '-action',
             timestamp: new Date(),
-            content: `Scheduled: ${newEvent.title} @ ${newEvent.location || 'No Location'}`,
+            content: `Scheduled: ${eventData.title} @ ${eventData.location || 'No Location'}${isAuthenticated ? ' - Added to Google Calendar' : ''}`,
             type: 'action'
         }]);
-        return { success: true, eventId: newEvent.id };
+        return { success: true, eventId: eventData.id };
 
       case 'save_suggestion':
         const newSuggestion: Suggestion = {
@@ -375,7 +505,7 @@ function App() {
         console.warn(`Unknown tool called: ${name}`);
         return { error: 'Unknown tool' };
     }
-  }, []);
+  }, [isAuthenticated]);
 
   // --- CRUD Handlers for Tasks ---
   const handleUpdateTask = useCallback((id: string, updates: Partial<Task>) => {
@@ -591,7 +721,18 @@ function App() {
         >
           <Menu size={24} strokeWidth={2} />
         </button>
+        <img src="/logo.png" alt="Daily Pilot" className="h-10 md:h-12 w-auto" />
         <h1 className="text-3xl md:text-4xl font-black tracking-tight">Daily Pilot</h1>
+        <div className="ml-auto">
+          <GoogleSignIn
+            isAuthenticated={isAuthenticated}
+            isLoading={authLoading}
+            error={authError}
+            onLogin={login}
+            onLogout={logout}
+            onClearError={clearError}
+          />
+        </div>
       </header>
 
       {/* Menu Dropdown */}
