@@ -10,7 +10,7 @@ import { MessageDraftList } from './components/MessageDraftList';
 import { FabricWave3D } from './components/FabricWave3D';
 import { GoogleSignIn } from './components/GoogleSignIn';
 import { useAuth } from './hooks/useAuth';
-import { AlertCircle, X, Menu, Mic, CheckSquare, Calendar, BrainCircuit, MessageSquare, Lightbulb, Keyboard, Send, Loader2 } from 'lucide-react';
+import { AlertCircle, X, Menu, Mic, CheckSquare, Calendar, BrainCircuit, MessageSquare, Lightbulb, Keyboard, Send, Loader2, ArrowRight, Sparkles } from 'lucide-react';
 
 type ViewType = 'home' | 'tasks' | 'calendar' | 'notes' | 'drafts' | 'suggestions';
 
@@ -29,6 +29,9 @@ function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [inputMode, setInputMode] = useState<'voice' | 'text'>('voice');
   const [textInput, setTextInput] = useState('');
+  const [signInBannerDismissed, setSignInBannerDismissed] = useState(() => {
+    return localStorage.getItem('signInBannerDismissed') === 'true';
+  });
 
   // Google OAuth authentication
   const { isAuthenticated, isLoading: authLoading, error: authError, login, logout, clearError } = useAuth();
@@ -94,6 +97,56 @@ function App() {
         setUserLocation("San Francisco, CA (Default)");
     }
   }, []);
+
+  // Fetch calendar events and tasks when authenticated
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    const fetchCalendarData = async () => {
+      try {
+        // Fetch calendar events for next 7 days
+        const now = new Date();
+        const timeMin = now.toISOString();
+        const timeMax = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+        const params = new URLSearchParams({ timeMin, timeMax });
+        const eventsResponse = await fetch(`${API_BASE}/api/calendar/events?${params}`, {
+          credentials: 'include',
+        });
+
+        if (eventsResponse.ok) {
+          const data = await eventsResponse.json();
+          if (data.events && data.events.length > 0) {
+            setEvents(prev => {
+              const existingIds = new Set(prev.map(e => e.id));
+              const newEvents = data.events.filter((e: CalendarEvent) => !existingIds.has(e.id));
+              return [...prev, ...newEvents];
+            });
+          }
+        }
+
+        // Fetch tasks from default list
+        const tasksResponse = await fetch(`${API_BASE}/api/tasks/@default`, {
+          credentials: 'include',
+        });
+
+        if (tasksResponse.ok) {
+          const data = await tasksResponse.json();
+          if (data.tasks && data.tasks.length > 0) {
+            setTasks(prev => {
+              const existingIds = new Set(prev.map(t => t.id));
+              const newTasks = data.tasks.filter((t: Task) => !existingIds.has(t.id));
+              return [...prev, ...newTasks];
+            });
+          }
+        }
+      } catch (error) {
+        console.error('Failed to fetch calendar data:', error);
+      }
+    };
+
+    fetchCalendarData();
+  }, [isAuthenticated]);
 
   // Auto-show Chain of Thought panel when new logs arrive
   useEffect(() => {
@@ -366,7 +419,12 @@ function App() {
             content: `Checked Calendar for "${args.query}". Found ${foundEvents.length} events.${isAuthenticated ? ' (Google Calendar)' : ' (Demo Data)'}`,
             type: 'reasoning'
         }]);
-        return { events: foundEvents };
+        // Include explicit completion hint to help Gemini stop looping (known bug workaround)
+        return {
+          events: foundEvents,
+          status: "complete",
+          instruction: "Calendar data retrieved successfully. Now summarize these events for the user in a natural spoken response. Do NOT call any more tools."
+        };
 
       case 'add_task':
         // If authenticated, also create in Google Tasks
@@ -735,6 +793,39 @@ function App() {
         </div>
       </header>
 
+      {/* Sign-in Banner for unauthenticated users */}
+      {!isAuthenticated && !authLoading && !signInBannerDismissed && (
+        <div className="mx-4 md:mx-8 mb-4 bg-gradient-to-r from-indigo-50 to-teal-50 border border-indigo-200 rounded-xl p-4 flex items-center gap-4 fade-in">
+          <div className="flex-shrink-0 w-10 h-10 bg-indigo-100 rounded-full flex items-center justify-center">
+            <Calendar size={20} className="text-indigo-600" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="font-medium text-gray-800 text-sm md:text-base">
+              Connect your Google Calendar for the full experience
+            </p>
+            <p className="text-gray-500 text-xs md:text-sm mt-0.5">
+              Daily Pilot can sync your events, check for conflicts, and add tasks directly to your calendar.
+            </p>
+          </div>
+          <button
+            onClick={login}
+            className="flex-shrink-0 flex items-center gap-2 bg-indigo-500 hover:bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+          >
+            Connect <ArrowRight size={16} />
+          </button>
+          <button
+            onClick={() => {
+              setSignInBannerDismissed(true);
+              localStorage.setItem('signInBannerDismissed', 'true');
+            }}
+            className="flex-shrink-0 p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-200 rounded-lg transition-colors"
+            title="Dismiss"
+          >
+            <X size={18} />
+          </button>
+        </div>
+      )}
+
       {/* Menu Dropdown */}
       {menuOpen && (
         <div className="absolute top-16 left-4 z-40 bg-white rounded-xl shadow-xl border border-gray-200 py-2 min-w-[200px] fade-in">
@@ -845,6 +936,39 @@ function App() {
                 {isProcessingText ? 'Processing...' : isRecording ? 'Listening...' : inputMode === 'voice' ? (isConnected ? 'Tap to speak' : 'Tap microphone to start') : 'Type and press enter'}
               </p>
             </div>
+
+            {/* Example prompts for authenticated users */}
+            {isAuthenticated && !isRecording && !isProcessingText && logs.length === 0 && (
+              <div className="mt-6 text-center fade-in">
+                <p className="text-xs text-gray-400 mb-3 flex items-center justify-center gap-1.5">
+                  <Sparkles size={12} />
+                  Try saying or typing
+                </p>
+                <div className="flex flex-wrap justify-center gap-2 max-w-md mx-auto">
+                  {[
+                    "What's on my schedule today?",
+                    "Add a task to call mom",
+                    "Schedule lunch with Sarah tomorrow",
+                    "Do I have any conflicts this week?",
+                  ].map((prompt, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => {
+                        if (inputMode === 'text') {
+                          setTextInput(prompt);
+                        } else {
+                          setInputMode('text');
+                          setTextInput(prompt);
+                        }
+                      }}
+                      className="text-xs bg-white/80 hover:bg-white border border-gray-200 hover:border-teal-300 text-gray-600 hover:text-teal-700 px-3 py-1.5 rounded-full transition-all shadow-sm hover:shadow"
+                    >
+                      "{prompt}"
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Content Panel - Slides in from right */}

@@ -4,8 +4,14 @@ type StatusHandler = (active: boolean) => void;
 type ErrorHandler = (error: string) => void;
 type AudioVolumeHandler = (volume: number) => void;
 
+// Server WebSocket URL
+const WS_URL = import.meta.env.DEV
+  ? 'ws://localhost:3001/api/live'
+  : `wss://${window.location.host}/api/live`;
+
 export class LiveManager {
   private ws: WebSocket | null = null;
+  private manuallyDisconnecting = false;
 
   private inputAudioContext: AudioContext | null = null;
   private outputAudioContext: AudioContext | null = null;
@@ -14,7 +20,6 @@ export class LiveManager {
   private mediaStream: MediaStream | null = null;
   private nextStartTime = 0;
   private sources = new Set<AudioBufferSourceNode>();
-  private manuallyDisconnecting = false;
 
   private onToolCall: ToolHandler;
   private onStatusChange: StatusHandler;
@@ -47,64 +52,63 @@ export class LiveManager {
       this.inputAudioContext = new AudioContextClass({ sampleRate: 16000 });
       this.outputAudioContext = new AudioContextClass({ sampleRate: 24000 });
 
-      // Connect to backend WebSocket proxy
-      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsHost = window.location.hostname;
-      const wsPort = import.meta.env.DEV ? '3001' : window.location.port;
-      const wsUrl = `${wsProtocol}//${wsHost}:${wsPort}/api/live`;
-
-      this.ws = new WebSocket(wsUrl);
+      // Connect to server WebSocket
+      this.ws = new WebSocket(WS_URL);
 
       this.ws.onopen = () => {
         console.log('Connected to Live API proxy');
       };
 
       this.ws.onmessage = async (event) => {
-        try {
-          const message = JSON.parse(event.data);
+        if (this.manuallyDisconnecting) return;
 
-          if (message.type === 'connected') {
+        try {
+          const msg = JSON.parse(event.data);
+
+          if (msg.type === 'connected' || msg.type === 'reconnected') {
             this.isConnected = true;
             this.onStatusChange(true);
             // Start audio immediately upon connect
             this.startAudio();
-          } else if (message.type === 'message') {
-            await this.handleGeminiMessage(message.data);
-          } else if (message.type === 'closed') {
+            if (msg.type === 'reconnected') {
+              console.log('Session reconnected after loop detection');
+            }
+          } else if (msg.type === 'message') {
+            await this.handleGeminiMessage(msg.data);
+          } else if (msg.type === 'loop_detected') {
+            console.warn('Loop detected:', msg.message);
+            this.onError(msg.message);
+          } else if (msg.type === 'error') {
+            console.error('Server error:', msg.error);
+            this.onError(msg.error);
+          } else if (msg.type === 'closed') {
             this.isConnected = false;
             this.onStatusChange(false);
-            if (!this.manuallyDisconnecting) {
-              this.onError("Session disconnected.");
-            }
-          } else if (message.type === 'error') {
-            if (!this.manuallyDisconnecting) {
-              this.onError(message.error || "Connection error occurred.");
-            }
           }
         } catch (e) {
           console.error('Error parsing WebSocket message:', e);
         }
       };
 
-      this.ws.onclose = () => {
+      this.ws.onclose = (e) => {
         this.isConnected = false;
         this.onStatusChange(false);
         if (!this.manuallyDisconnecting) {
-          this.onError("Connection closed.");
+          console.log('WebSocket closed unexpectedly', e);
+          this.onError('Session disconnected.');
         }
       };
 
-      this.ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
-        if (!this.manuallyDisconnecting) {
-          this.onError("Connection error occurred.");
-        }
+      this.ws.onerror = (err) => {
+        if (this.manuallyDisconnecting) return;
+        console.error('WebSocket error:', err);
+        this.onError('Connection error occurred.');
       };
 
     } catch (err: any) {
       this.isConnected = false;
       this.onStatusChange(false);
-      this.onError(err.message || "Failed to connect to Daily Pilot.");
+      this.onError(err.message || 'Failed to connect to Daily Pilot.');
       this.disconnect();
     }
   }
@@ -132,6 +136,7 @@ export class LiveManager {
 
       this.processor.onaudioprocess = (e) => {
         if (!this.isMicActive || this.manuallyDisconnecting) return;
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
         const inputData = e.inputBuffer.getChannelData(0);
 
@@ -143,24 +148,20 @@ export class LiveManager {
         const rms = Math.sqrt(sum / inputData.length);
         this.onVolume(rms);
 
-        // Convert to base64 PCM
-        const b64 = this.createBase64Audio(inputData);
-
-        // Send to backend
-        if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isMicActive) {
-          this.ws.send(JSON.stringify({
-            type: 'audio',
-            data: b64
-          }));
-        }
+        // Convert to PCM and send to server
+        const b64 = this.float32ToBase64PCM(inputData);
+        this.ws.send(JSON.stringify({
+          type: 'audio',
+          data: b64
+        }));
       };
 
       this.inputSource.connect(this.processor);
       this.processor.connect(this.inputAudioContext.destination);
       this.isMicActive = true;
     } catch (e: any) {
-      console.error("Microphone access error:", e);
-      this.onError("Microphone access denied.");
+      console.error('Microphone access error:', e);
+      this.onError('Microphone access denied.');
     }
   }
 
@@ -206,7 +207,7 @@ export class LiveManager {
           responses.push({
             id: fc.id,
             name: fc.name,
-            response: { error: "Failed to execute" }
+            response: { error: 'Failed to execute' }
           });
         }
       }
@@ -215,7 +216,7 @@ export class LiveManager {
       if (responses.length > 0 && this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.ws.send(JSON.stringify({
           type: 'toolResponse',
-          responses
+          responses: responses
         }));
       }
     }
@@ -234,7 +235,7 @@ export class LiveManager {
       this.nextStartTime = Math.max(this.nextStartTime, this.outputAudioContext.currentTime);
 
       const audioBuffer = await this.decodeAudioData(
-        this.decode(base64Audio),
+        this.base64ToUint8(base64Audio),
         this.outputAudioContext,
         24000,
         1
@@ -274,7 +275,7 @@ export class LiveManager {
       try {
         this.ws.close();
       } catch (e) {
-        console.log("WebSocket close warning:", e);
+        console.log('WebSocket close warning:', e);
       }
     }
     this.ws = null;
@@ -292,7 +293,7 @@ export class LiveManager {
     this.onStatusChange(false);
   }
 
-  private createBase64Audio(data: Float32Array): string {
+  private float32ToBase64PCM(data: Float32Array): string {
     const l = data.length;
     const int16 = new Int16Array(l);
     for (let i = 0; i < l; i++) {
@@ -307,7 +308,7 @@ export class LiveManager {
     return btoa(binary);
   }
 
-  private decode(base64: string) {
+  private base64ToUint8(base64: string): Uint8Array {
     const binaryString = atob(base64);
     const len = binaryString.length;
     const bytes = new Uint8Array(len);

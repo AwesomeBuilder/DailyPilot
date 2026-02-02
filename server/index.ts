@@ -6,9 +6,12 @@ import { GoogleGenAI, Modality, StartSensitivity, EndSensitivity } from '@google
 import { google, calendar_v3, tasks_v1 } from 'googleapis';
 import cookieParser from 'cookie-parser';
 import session from 'express-session';
+import FileStoreFactory from 'session-file-store';
 import { TOOLS_DECLARATION, SYSTEM_INSTRUCTION } from '../types.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
+
+const FileStore = FileStoreFactory(session);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -16,13 +19,21 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 process.env.GOOGLE_APPLICATION_CREDENTIALS = path.resolve(__dirname, '../service-account.json');
 
 const PROJECT_ID = 'gen-lang-client-0616796979';
-const LOCATION = 'us-central1';
+const LOCATION_REGIONAL = 'us-central1';  // For Live API (doesn't support global)
+const LOCATION_GLOBAL = 'global';          // For Gemini 3 models (requires global)
 
-// Initialize Vertex AI client
-const ai = new GoogleGenAI({
+// Initialize Vertex AI client for Live API (regional endpoint)
+const aiLive = new GoogleGenAI({
   vertexai: true,
   project: PROJECT_ID,
-  location: LOCATION,
+  location: LOCATION_REGIONAL,
+});
+
+// Initialize Vertex AI client for Text Generation (global endpoint for Gemini 3)
+const aiText = new GoogleGenAI({
+  vertexai: true,
+  project: PROJECT_ID,
+  location: LOCATION_GLOBAL,
 });
 
 // OAuth2 Configuration
@@ -62,8 +73,14 @@ const app = express();
 app.use(express.json());
 app.use(cookieParser());
 
-// Session middleware
+// Session middleware with file-based storage for persistence across server restarts
 app.use(session({
+  store: new FileStore({
+    path: path.join(__dirname, '../.sessions'),
+    ttl: 7 * 24 * 60 * 60, // 7 days in seconds
+    retries: 0,
+    logFn: () => {}, // Suppress verbose logs
+  }),
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
@@ -115,7 +132,7 @@ async function getAuthenticatedClient(req: express.Request): Promise<typeof oaut
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', project: PROJECT_ID, location: LOCATION });
+  res.json({ status: 'ok', project: PROJECT_ID, locationLive: LOCATION_REGIONAL, locationText: LOCATION_GLOBAL });
 });
 
 // ==================== OAuth Endpoints ====================
@@ -179,6 +196,65 @@ app.post('/api/auth/logout', (req, res) => {
 
 // ==================== Calendar API Endpoints ====================
 
+// Helper: Parse temporal queries into date ranges
+function parseTemporalQuery(query: string): { timeMin: Date; timeMax: Date; isTemporalQuery: boolean } {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
+  const dayAfterTomorrow = new Date(today.getTime() + 2 * 24 * 60 * 60 * 1000);
+
+  const lowerQuery = query.toLowerCase().trim();
+
+  // Today
+  if (lowerQuery === 'today' || lowerQuery === 'today\'s' || lowerQuery.includes('today')) {
+    return { timeMin: today, timeMax: tomorrow, isTemporalQuery: true };
+  }
+
+  // Tomorrow
+  if (lowerQuery === 'tomorrow' || lowerQuery === 'tomorrow\'s' || lowerQuery.includes('tomorrow')) {
+    return { timeMin: tomorrow, timeMax: dayAfterTomorrow, isTemporalQuery: true };
+  }
+
+  // This week
+  if (lowerQuery === 'this week' || lowerQuery.includes('this week')) {
+    const endOfWeek = new Date(today);
+    endOfWeek.setDate(today.getDate() + (7 - today.getDay())); // Sunday
+    return { timeMin: today, timeMax: endOfWeek, isTemporalQuery: true };
+  }
+
+  // Next week
+  if (lowerQuery === 'next week' || lowerQuery.includes('next week')) {
+    const startOfNextWeek = new Date(today);
+    startOfNextWeek.setDate(today.getDate() + (7 - today.getDay()));
+    const endOfNextWeek = new Date(startOfNextWeek.getTime() + 7 * 24 * 60 * 60 * 1000);
+    return { timeMin: startOfNextWeek, timeMax: endOfNextWeek, isTemporalQuery: true };
+  }
+
+  // Next N days (e.g., "next 3 days", "next 7 days")
+  const nextDaysMatch = lowerQuery.match(/next\s+(\d+)\s+days?/);
+  if (nextDaysMatch) {
+    const days = parseInt(nextDaysMatch[1], 10);
+    return { timeMin: today, timeMax: new Date(today.getTime() + days * 24 * 60 * 60 * 1000), isTemporalQuery: true };
+  }
+
+  // Specific day of week (e.g., "monday", "on tuesday")
+  const daysOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  for (let i = 0; i < daysOfWeek.length; i++) {
+    if (lowerQuery === daysOfWeek[i] || lowerQuery === `on ${daysOfWeek[i]}`) {
+      const targetDay = i;
+      const currentDay = today.getDay();
+      let daysUntil = targetDay - currentDay;
+      if (daysUntil <= 0) daysUntil += 7; // Next occurrence
+      const targetDate = new Date(today.getTime() + daysUntil * 24 * 60 * 60 * 1000);
+      const dayAfter = new Date(targetDate.getTime() + 24 * 60 * 60 * 1000);
+      return { timeMin: targetDate, timeMax: dayAfter, isTemporalQuery: true };
+    }
+  }
+
+  // Not a temporal query
+  return { timeMin: now, timeMax: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000), isTemporalQuery: false };
+}
+
 // GET /api/calendar/events - List/search events
 app.get('/api/calendar/events', async (req, res) => {
   const client = await getAuthenticatedClient(req);
@@ -189,20 +265,30 @@ app.get('/api/calendar/events', async (req, res) => {
   try {
     const calendar = google.calendar({ version: 'v3', auth: client });
 
-    const { query, timeMin, timeMax } = req.query;
+    const { query, timeMin: queryTimeMin, timeMax: queryTimeMax } = req.query;
 
-    // Default to next 7 days if no time range specified
+    // Parse the query to detect temporal terms
+    const queryStr = (query as string) || '';
+    const { timeMin: parsedTimeMin, timeMax: parsedTimeMax, isTemporalQuery } = parseTemporalQuery(queryStr);
+
+    // Use parsed temporal range if detected, otherwise use provided params or defaults
     const now = new Date();
     const defaultTimeMin = now.toISOString();
     const defaultTimeMax = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
+    const effectiveTimeMin = isTemporalQuery ? parsedTimeMin.toISOString() : ((queryTimeMin as string) || defaultTimeMin);
+    const effectiveTimeMax = isTemporalQuery ? parsedTimeMax.toISOString() : ((queryTimeMax as string) || defaultTimeMax);
+
+    // Only use q parameter for non-temporal content searches
+    const textSearchQuery = isTemporalQuery ? undefined : (queryStr || undefined);
+
     const response = await calendar.events.list({
       calendarId: 'primary',
-      timeMin: (timeMin as string) || defaultTimeMin,
-      timeMax: (timeMax as string) || defaultTimeMax,
+      timeMin: effectiveTimeMin,
+      timeMax: effectiveTimeMax,
       singleEvents: true,
       orderBy: 'startTime',
-      q: query as string || undefined,
+      q: textSearchQuery,
       maxResults: 50,
     });
 
@@ -457,8 +543,8 @@ app.post('/api/generate', async (req, res) => {
   try {
     const { contents, config } = req.body;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.0-flash',
+    const response = await aiText.models.generateContent({
+      model: 'gemini-3-flash-preview',
       config: {
         ...config,
         systemInstruction: SYSTEM_INSTRUCTION,
@@ -490,13 +576,20 @@ wss.on('connection', async (clientWs: WebSocket) => {
   console.log('Client connected to Live API proxy');
 
   let geminiSession: any = null;
+  let isReconnecting = false;
 
-  try {
-    // Connect to Gemini Live API via Vertex AI
-    geminiSession = await ai.live.connect({
-      model: 'gemini-2.0-flash-live-preview-04-09',
+  // Server-side loop prevention
+  const toolCallCounts = new Map<string, number>();
+  const MAX_TOOL_CALLS = 3;  // Max times same tool+args can be called
+
+  // Function to create/recreate Gemini session
+  const createGeminiSession = async () => {
+    return await aiLive.live.connect({
+      model: 'gemini-live-2.5-flash-native-audio',
       config: {
         responseModalities: [Modality.AUDIO],
+        // Temperature 1.0 is critical for Gemini 2.5 models to prevent infinite token loops
+        temperature: 1.0,
         systemInstruction: SYSTEM_INSTRUCTION,
         tools: [{ functionDeclarations: TOOLS_DECLARATION }],
         realtimeInputConfig: {
@@ -512,9 +605,52 @@ wss.on('connection', async (clientWs: WebSocket) => {
       callbacks: {
         onopen: () => {
           console.log('Gemini Live session opened');
-          clientWs.send(JSON.stringify({ type: 'connected' }));
+          if (!isReconnecting) {
+            clientWs.send(JSON.stringify({ type: 'connected' }));
+          } else {
+            console.log('Reconnected after loop detection');
+            clientWs.send(JSON.stringify({ type: 'reconnected' }));
+          }
+          isReconnecting = false;
         },
         onmessage: (message: any) => {
+          // Check for tool call loops
+          if (message.toolCall) {
+            const callKey = JSON.stringify(message.toolCall);
+            const count = (toolCallCounts.get(callKey) || 0) + 1;
+            toolCallCounts.set(callKey, count);
+
+            if (count > MAX_TOOL_CALLS) {
+              console.warn(`Loop detected on server: ${count} identical tool calls. Resetting session.`);
+              toolCallCounts.clear();
+
+              // Close current session and reconnect
+              isReconnecting = true;
+              try {
+                geminiSession.close();
+              } catch (e) {
+                // Ignore
+              }
+
+              // Notify client and reconnect
+              clientWs.send(JSON.stringify({
+                type: 'loop_detected',
+                message: 'Agent was stuck in a loop. Resetting session.'
+              }));
+
+              createGeminiSession().then(session => {
+                geminiSession = session;
+              }).catch(err => {
+                console.error('Failed to reconnect:', err);
+                clientWs.send(JSON.stringify({ type: 'error', error: 'Failed to reconnect after loop' }));
+              });
+
+              return; // Don't forward this message
+            }
+
+            console.log('Gemini requesting tool call:', JSON.stringify(message.toolCall, null, 2));
+          }
+
           // Forward Gemini messages to client
           if (clientWs.readyState === WebSocket.OPEN) {
             clientWs.send(JSON.stringify({ type: 'message', data: message }));
@@ -522,7 +658,7 @@ wss.on('connection', async (clientWs: WebSocket) => {
         },
         onclose: (event: any) => {
           console.log('Gemini session closed', event);
-          if (clientWs.readyState === WebSocket.OPEN) {
+          if (clientWs.readyState === WebSocket.OPEN && !isReconnecting) {
             clientWs.send(JSON.stringify({ type: 'closed' }));
             clientWs.close();
           }
@@ -535,7 +671,11 @@ wss.on('connection', async (clientWs: WebSocket) => {
         }
       }
     });
+  };
 
+  try {
+    // Connect to Gemini Live API via Vertex AI
+    geminiSession = await createGeminiSession();
   } catch (error: any) {
     console.error('Failed to connect to Gemini Live:', error);
     clientWs.send(JSON.stringify({ type: 'error', error: error.message }));
@@ -557,10 +697,29 @@ wss.on('connection', async (clientWs: WebSocket) => {
           }
         });
       } else if (message.type === 'toolResponse') {
-        // Send tool response to Gemini
-        await geminiSession.sendToolResponse({
-          functionResponses: message.responses
-        });
+        // Check for loops before sending
+        const responses = message.responses || [];
+        let shouldSend = true;
+
+        for (const resp of responses) {
+          const key = `${resp.name}:${JSON.stringify(resp.response?.result)}`;
+          const count = (toolCallCounts.get(key) || 0) + 1;
+          toolCallCounts.set(key, count);
+
+          if (count > MAX_TOOL_CALLS) {
+            console.warn(`Server loop prevention: ${resp.name} called ${count} times, NOT sending response to break loop`);
+            shouldSend = false;
+          }
+        }
+
+        if (shouldSend) {
+          console.log('Sending tool response:', JSON.stringify(message.responses, null, 2));
+          await geminiSession.sendToolResponse({
+            functionResponses: message.responses
+          });
+        } else {
+          console.log('Skipping tool response to break loop');
+        }
       }
     } catch (error) {
       console.error('Error processing client message:', error);
@@ -588,6 +747,7 @@ const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
   console.log(`Vertex AI proxy server running on port ${PORT}`);
   console.log(`Project: ${PROJECT_ID}`);
-  console.log(`Location: ${LOCATION}`);
+  console.log(`Location (Live API): ${LOCATION_REGIONAL}`);
+  console.log(`Location (Text/Gemini 3): ${LOCATION_GLOBAL}`);
   console.log(`OAuth configured: ${GOOGLE_CLIENT_ID ? 'Yes' : 'No (set GOOGLE_CLIENT_ID)'}`);
 });
