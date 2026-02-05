@@ -30,3 +30,6 @@ package-lock.json
 service-account.json
 *.json.key
 
+# Session files
+.sessions/
+
