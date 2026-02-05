@@ -28,10 +28,17 @@ export const SuggestionList: React.FC<Props> = ({ suggestions }) => {
     return item;
   };
 
-  // Get display URL - use agent-provided URL or fall back to Google Search
-  const getUrl = (item: SuggestionItem): string => {
-    if (item.url) return item.url;
-    return `https://www.google.com/search?q=${encodeURIComponent(item.text)}`;
+  // Validate and clean URL - returns null if invalid
+  const getValidUrl = (url: string | undefined): string | null => {
+    if (!url || typeof url !== 'string') return null;
+    const trimmed = url.trim();
+    if (!trimmed || trimmed.length < 5) return null;
+    // Ensure it has a protocol
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+      return trimmed;
+    }
+    // Add https:// if missing
+    return `https://${trimmed}`;
   };
 
   return (
@@ -60,14 +67,21 @@ export const SuggestionList: React.FC<Props> = ({ suggestions }) => {
             <ul className="space-y-1">
                 {s.items.map((item, idx) => {
                     const itemData = normalizeItem(item);
-                    const url = getUrl(itemData);
+                    const validUrl = getValidUrl(itemData.url);
                     const isRawUrl = itemData.text.startsWith('http');
-                    const display = isRawUrl ? new URL(itemData.text).hostname : itemData.text;
+                    let display = itemData.text;
+                    try {
+                      display = isRawUrl ? new URL(itemData.text).hostname : itemData.text;
+                    } catch {
+                      // Keep original text if URL parsing fails
+                    }
 
-                    return (
+                    // Only render as link if agent provided a valid URL
+                    if (validUrl) {
+                      return (
                         <li key={idx} className="group">
                             <a
-                                href={url}
+                                href={validUrl}
                                 target="_blank"
                                 rel="noreferrer"
                                 className="flex items-center gap-2 p-2 -mx-1 rounded-lg hover:bg-teal-50 active:bg-teal-100 transition-colors cursor-pointer"
@@ -77,6 +91,15 @@ export const SuggestionList: React.FC<Props> = ({ suggestions }) => {
                                 <ExternalLink size={14} className="text-gray-400 group-hover:text-teal-primary transition-colors flex-shrink-0" />
                             </a>
                         </li>
+                      );
+                    }
+
+                    // Plain text item (no link)
+                    return (
+                      <li key={idx} className="flex items-center gap-2 p-2 -mx-1">
+                          <span className="block w-1.5 h-1.5 rounded-full bg-gray-400 flex-shrink-0"></span>
+                          <span className="text-sm text-gray-700">{display}</span>
+                      </li>
                     );
                 })}
             </ul>

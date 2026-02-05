@@ -3,6 +3,7 @@ type ToolHandler = (name: string, args: any) => Promise<any>;
 type StatusHandler = (active: boolean) => void;
 type ErrorHandler = (error: string) => void;
 type AudioVolumeHandler = (volume: number) => void;
+type ThoughtHandler = (thought: string) => void;
 
 // Server WebSocket URL
 const WS_URL = import.meta.env.DEV
@@ -21,10 +22,13 @@ export class LiveManager {
   private nextStartTime = 0;
   private sources = new Set<AudioBufferSourceNode>();
 
+  // Note: Deduplication is handled server-side
+
   private onToolCall: ToolHandler;
   private onStatusChange: StatusHandler;
   private onError: ErrorHandler;
   private onVolume: AudioVolumeHandler;
+  private onThought: ThoughtHandler;
 
   public isConnected = false;
   public isMicActive = false;
@@ -33,12 +37,14 @@ export class LiveManager {
     onToolCall: ToolHandler,
     onStatusChange: StatusHandler,
     onError: ErrorHandler,
-    onVolume: AudioVolumeHandler
+    onVolume: AudioVolumeHandler,
+    onThought?: ThoughtHandler
   ) {
     this.onToolCall = onToolCall;
     this.onStatusChange = onStatusChange;
     this.onError = onError;
     this.onVolume = onVolume;
+    this.onThought = onThought || (() => {});
   }
 
   async connect() {
@@ -75,6 +81,16 @@ export class LiveManager {
             }
           } else if (msg.type === 'message') {
             await this.handleGeminiMessage(msg.data);
+          } else if (msg.type === 'thought') {
+            // Server-side log_thought - just update UI, no response needed
+            if (msg.data?.thought) {
+              console.log(`[THOUGHT] ${msg.data.type}: ${msg.data.thought}`);
+              // Call the tool handler to update UI (it returns immediately)
+              this.onToolCall('log_thought', {
+                thought: msg.data.thought,
+                type: msg.data.type || 'reasoning'
+              });
+            }
           } else if (msg.type === 'loop_detected') {
             console.warn('Loop detected:', msg.message);
             this.onError(msg.message);
@@ -191,11 +207,22 @@ export class LiveManager {
   private async handleGeminiMessage(message: any) {
     if (this.manuallyDisconnecting) return;
 
-    // 1. Handle Tool Calls
+    // 0. Handle Reasoning Thoughts (from thinkingConfig)
+    const parts = message.serverContent?.modelTurn?.parts || [];
+    for (const part of parts) {
+      if (part.thought && part.text) {
+        console.log('--- MODEL REASONING ---', part.text);
+        this.onThought(part.text);
+      }
+    }
+
+    // 1. Handle Tool Calls (deduplication happens server-side)
     if (message.toolCall) {
       const responses = [];
+
       for (const fc of message.toolCall.functionCalls) {
         try {
+          console.log(`[TOOL] Executing: ${fc.name}`, fc.args);
           const result = await this.onToolCall(fc.name, fc.args);
           responses.push({
             id: fc.id,
@@ -214,6 +241,7 @@ export class LiveManager {
 
       // Send response back through WebSocket
       if (responses.length > 0 && this.ws && this.ws.readyState === WebSocket.OPEN) {
+        console.log(`[WS] Sending ${responses.length} tool responses`);
         this.ws.send(JSON.stringify({
           type: 'toolResponse',
           responses: responses

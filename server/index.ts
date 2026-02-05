@@ -430,12 +430,15 @@ app.post('/api/tasks/:listId', async (req, res) => {
     const { listId } = req.params;
     const { title, description, deadline } = req.body;
 
+    // Normalize the date to prevent RangeError loops
+    const normalizedDeadline = deadline ? normalizeDate(deadline) : undefined;
+
     const response = await tasksApi.tasks.insert({
       tasklist: listId,
       requestBody: {
         title,
         notes: description || '',
-        due: deadline ? new Date(deadline).toISOString() : undefined,
+        due: normalizedDeadline,
       },
     });
 
@@ -452,7 +455,11 @@ app.post('/api/tasks/:listId', async (req, res) => {
     });
   } catch (error: any) {
     console.error('Task create error:', error);
-    res.status(500).json({ error: error.message });
+    // Return error to client so model gets feedback instead of looping
+    res.status(500).json({
+      error: error.message,
+      suggestion: 'Invalid date format. Use YYYY-MM-DDTHH:mm:ss format.'
+    });
   }
 });
 
@@ -496,7 +503,54 @@ app.patch('/api/tasks/:listId/:taskId', async (req, res) => {
   }
 });
 
+// DELETE /api/tasks/:listId/:taskId - Delete task
+app.delete('/api/tasks/:listId/:taskId', async (req, res) => {
+  const client = await getAuthenticatedClient(req);
+  if (!client) {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
+
+  try {
+    const tasksApi = google.tasks({ version: 'v1', auth: client });
+    const { listId, taskId } = req.params;
+
+    await tasksApi.tasks.delete({
+      tasklist: listId,
+      task: taskId,
+    });
+
+    res.json({ success: true });
+  } catch (error: any) {
+    console.error('Task delete error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ==================== Helper Functions ====================
+
+/**
+ * Normalizes dates from Gemini to prevent RangeErrors.
+ * If parsing fails, it returns null instead of throwing.
+ */
+function normalizeDate(input: any): string | null {
+  try {
+    if (!input) return null;
+
+    // 1. Try direct parsing
+    let date = new Date(input);
+
+    // 2. If Gemini sent a partial string like "2026-02-04" without time
+    if (isNaN(date.getTime()) && typeof input === 'string') {
+      // Append a default time if only a date was provided
+      date = new Date(`${input}T12:00:00`);
+    }
+
+    if (isNaN(date.getTime())) return null;
+    return date.toISOString();
+  } catch {
+    return null;
+  }
+}
 
 function calculateDuration(
   start: calendar_v3.Schema$EventDateTime | undefined,
@@ -576,89 +630,362 @@ wss.on('connection', async (clientWs: WebSocket) => {
   console.log('Client connected to Live API proxy');
 
   let geminiSession: any = null;
-  let isReconnecting = false;
 
-  // Server-side loop prevention
-  const toolCallCounts = new Map<string, number>();
-  const MAX_TOOL_CALLS = 3;  // Max times same tool+args can be called
+  // === LOOP PREVENTION STATE ===
+  const DEDUP_WINDOW_MS = 10000; // 10 second dedup window (increased)
 
-  // Function to create/recreate Gemini session
-  const createGeminiSession = async () => {
-    return await aiLive.live.connect({
+  // Track pending tool calls by args hash to deduplicate Gemini's duplicate requests
+  const pendingToolCalls = new Map<string, {
+    originalId: string;           // Internal tracking ID (generated)
+    geminiId: string | undefined; // Original ID from Gemini (preserve for response)
+    duplicateIds: string[];       // Internal IDs of duplicates
+    duplicateGeminiIds: (string | undefined)[]; // Original Gemini IDs of duplicates
+    name: string;                 // Tool name
+    timestamp: number;
+    result?: any;
+    responded: boolean;           // Whether we've already sent a response
+  }>();
+
+  // Track recent action tool calls for semantic dedup (prevents "add task X" twice)
+  const recentActions = new Map<string, number>(); // actionKey -> timestamp
+  const ACTION_DEDUP_WINDOW_MS = 15000; // 15 seconds for action dedup
+
+  // Track recent audio transcriptions to deduplicate similar responses
+  const recentTranscriptions: { text: string; timestamp: number }[] = [];
+  const TRANSCRIPTION_DEDUP_WINDOW_MS = 5000; // 5 second window
+  const TRANSCRIPTION_SIMILARITY_THRESHOLD = 0.7; // 70% similar = duplicate
+
+  // Simple similarity check for transcriptions
+  function isSimilarTranscription(text1: string, text2: string): boolean {
+    const words1 = text1.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+    const words2 = text2.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+    if (words1.length === 0 || words2.length === 0) return false;
+
+    const set1 = new Set(words1);
+    const set2 = new Set(words2);
+    const intersection = [...set1].filter(w => set2.has(w)).length;
+    const union = new Set([...words1, ...words2]).size;
+
+    return intersection / union > TRANSCRIPTION_SIMILARITY_THRESHOLD;
+  }
+
+  // Track current transcription being built
+  let currentTranscription = '';
+  let lastTranscriptionTime = 0;
+  let skipCurrentAudio = false; // Flag to skip audio for duplicate responses
+  let lastCompletedTranscription = '';
+  let lastTurnCompleteTime = 0;
+
+  // Aggressive audio cooldown - skip ALL audio for X ms after a completed response
+  const AUDIO_COOLDOWN_MS = 1500; // 1.5 second cooldown after each response
+  let audioCooldownUntil = 0;
+
+  // Generate unique IDs for tool calls with undefined IDs (internal tracking only)
+  let toolIdCounter = 0;
+
+  // Create a stable hash for tool args (handles property order and case differences)
+  function stableArgsHash(name: string, args: any): string {
+    if (!args || typeof args !== 'object') {
+      return `${name}:${String(args)}`;
+    }
+    // Sort keys and lowercase string values for stable comparison
+    const sortedKeys = Object.keys(args).sort();
+    const normalized: Record<string, any> = {};
+    for (const key of sortedKeys) {
+      const val = args[key];
+      normalized[key] = typeof val === 'string' ? val.toLowerCase().trim() : val;
+    }
+    return `${name}:${JSON.stringify(normalized)}`;
+  }
+
+  // Create a simplified key for action tools (for semantic dedup)
+  // This catches "add_task: Grocery Run" even if other args differ
+  function actionKey(name: string, args: any): string | null {
+    const actionTools = ['add_task', 'add_event', 'draft_message', 'delete_task', 'delete_event', 'save_suggestion', 'report_alert'];
+    if (!actionTools.includes(name)) return null;
+
+    // Use the most identifying field for each tool
+    if (name === 'add_task' || name === 'add_event') {
+      return `${name}:${(args?.title || '').toLowerCase().substring(0, 30)}`;
+    }
+    if (name === 'draft_message') {
+      return `${name}:${(args?.recipient || '').toLowerCase()}:${(args?.platform || '').toLowerCase()}`;
+    }
+    if (name === 'delete_task') {
+      return `${name}:${args?.taskId || ''}`;
+    }
+    if (name === 'delete_event') {
+      return `${name}:${args?.eventId || ''}`;
+    }
+    if (name === 'save_suggestion') {
+      return `${name}:${(args?.title || '').toLowerCase().substring(0, 30)}`;
+    }
+    if (name === 'report_alert') {
+      return `${name}:${(args?.message || '').toLowerCase().substring(0, 50)}`;
+    }
+    return null;
+  }
+
+  try {
+    // Connect to Gemini Live API via Vertex AI
+    geminiSession = await aiLive.live.connect({
       model: 'gemini-live-2.5-flash-native-audio',
       config: {
         responseModalities: [Modality.AUDIO],
-        // Temperature 1.0 is critical for Gemini 2.5 models to prevent infinite token loops
+        // Temperature 1.0 is CRITICAL - values below cause loops in Gemini 2.5
         temperature: 1.0,
         systemInstruction: SYSTEM_INSTRUCTION,
         tools: [{ functionDeclarations: TOOLS_DECLARATION }],
+        // Enable transcription to debug what model hears and says
+        inputAudioTranscription: {},  // What the model hears from user
+        outputAudioTranscription: {}, // What the model says
         realtimeInputConfig: {
           automaticActivityDetection: {
             disabled: false,
-            startOfSpeechSensitivity: StartSensitivity.START_SENSITIVITY_LOW,
-            endOfSpeechSensitivity: EndSensitivity.END_SENSITIVITY_LOW,
-            prefixPaddingMs: 100,
-            silenceDurationMs: 1500,
+            // MEDIUM sensitivity for better speech detection (LOW was causing missed responses)
+            startOfSpeechSensitivity: StartSensitivity.START_SENSITIVITY_MEDIUM,
+            endOfSpeechSensitivity: EndSensitivity.END_SENSITIVITY_MEDIUM,
+            prefixPaddingMs: 200,  // More padding to capture speech start
+            silenceDurationMs: 1000,  // Shorter silence threshold for faster response
           }
         },
       },
       callbacks: {
         onopen: () => {
           console.log('Gemini Live session opened');
-          if (!isReconnecting) {
-            clientWs.send(JSON.stringify({ type: 'connected' }));
-          } else {
-            console.log('Reconnected after loop detection');
-            clientWs.send(JSON.stringify({ type: 'reconnected' }));
-          }
-          isReconnecting = false;
+          clientWs.send(JSON.stringify({ type: 'connected' }));
         },
         onmessage: (message: any) => {
-          // Check for tool call loops
-          if (message.toolCall) {
-            const callKey = JSON.stringify(message.toolCall);
-            const count = (toolCallCounts.get(callKey) || 0) + 1;
-            toolCallCounts.set(callKey, count);
+          const now = Date.now();
 
-            if (count > MAX_TOOL_CALLS) {
-              console.warn(`Loop detected on server: ${count} identical tool calls. Resetting session.`);
-              toolCallCounts.clear();
-
-              // Close current session and reconnect
-              isReconnecting = true;
-              try {
-                geminiSession.close();
-              } catch (e) {
-                // Ignore
-              }
-
-              // Notify client and reconnect
-              clientWs.send(JSON.stringify({
-                type: 'loop_detected',
-                message: 'Agent was stuck in a loop. Resetting session.'
-              }));
-
-              createGeminiSession().then(session => {
-                geminiSession = session;
-              }).catch(err => {
-                console.error('Failed to reconnect:', err);
-                clientWs.send(JSON.stringify({ type: 'error', error: 'Failed to reconnect after loop' }));
-              });
-
-              return; // Don't forward this message
+          // Clean up old pending entries
+          for (const [key, entry] of pendingToolCalls) {
+            if (now - entry.timestamp > DEDUP_WINDOW_MS) {
+              pendingToolCalls.delete(key);
             }
-
-            console.log('Gemini requesting tool call:', JSON.stringify(message.toolCall, null, 2));
           }
 
-          // Forward Gemini messages to client
+          // Handle tool calls from Gemini - DEDUPLICATE before forwarding
+          if (message.toolCall) {
+            const calls = message.toolCall.functionCalls || [];
+            // Debug: log full structure to understand ID field
+            console.log(`[GEMINI→] Raw toolCall:`, JSON.stringify(message.toolCall, null, 2));
+            console.log(`[GEMINI→] Tool calls received: ${calls.map((c: any) => `${c.name}(id:${c.id})`).join(', ')}`);
+            console.log(`[DEBUG] Current pending keys: [${Array.from(pendingToolCalls.keys()).join(', ')}]`);
+
+            // Clean up old action dedup entries
+            for (const [key, timestamp] of recentActions) {
+              if (now - timestamp > ACTION_DEDUP_WINDOW_MS) {
+                recentActions.delete(key);
+              }
+            }
+
+            const uniqueCalls: any[] = [];
+
+            for (const fc of calls) {
+              // Preserve original Gemini ID (may be undefined)
+              const geminiId = fc.id;
+              // Generate internal tracking ID
+              const internalId = `server-${++toolIdCounter}-${now}`;
+
+              // Create stable dedup key (handles property order and case differences)
+              const dedupKey = stableArgsHash(fc.name, fc.args || {});
+              console.log(`[DEBUG] Checking dedupKey: ${dedupKey.substring(0, 100)}...`);
+
+              // SPECIAL HANDLING: log_thought is handled server-side only (no client roundtrip)
+              // This prevents multiple response cycles from log_thought calls
+              if (fc.name === 'log_thought') {
+                const thought = fc.args?.thought || '';
+                const thoughtType = fc.args?.type || 'reasoning';
+                console.log(`[LOG_THOUGHT] ${thoughtType}: ${thought.substring(0, 100)}...`);
+
+                // Forward thought to client for UI display (but don't wait for response)
+                if (clientWs.readyState === WebSocket.OPEN) {
+                  clientWs.send(JSON.stringify({
+                    type: 'thought',
+                    data: { thought, type: thoughtType }
+                  }));
+                }
+
+                // Immediately respond to Gemini (no client roundtrip needed)
+                geminiSession.sendToolResponse({
+                  functionResponses: [{
+                    id: geminiId,
+                    name: fc.name,
+                    response: { result: { success: true } }
+                  }]
+                });
+                continue;
+              }
+
+              // Check for exact duplicate (same args)
+              const existingEntry = pendingToolCalls.get(dedupKey);
+              if (existingEntry) {
+                // This is an exact duplicate - track it and send immediate response
+                existingEntry.duplicateIds.push(internalId);
+                existingEntry.duplicateGeminiIds.push(geminiId);
+                console.log(`[SERVER-DEDUP] Exact duplicate detected: ${fc.name} (geminiId: ${geminiId})`);
+
+                // If we have a cached result, respond immediately so Gemini doesn't hang
+                if (existingEntry.result !== undefined) {
+                  console.log(`[SERVER-DEDUP] Sending cached response for duplicate: ${fc.name} (geminiId: ${geminiId})`);
+                  geminiSession.sendToolResponse({
+                    functionResponses: [{
+                      id: geminiId,
+                      name: fc.name,
+                      response: { result: existingEntry.result }
+                    }]
+                  });
+                }
+                continue;
+              }
+
+              // Check for semantic duplicate (same action, different args)
+              const aKey = actionKey(fc.name, fc.args);
+              if (aKey && recentActions.has(aKey)) {
+                console.log(`[SERVER-DEDUP] Semantic duplicate detected: ${fc.name} - "${aKey}" was recently executed`);
+                // Send success response but don't execute
+                geminiSession.sendToolResponse({
+                  functionResponses: [{
+                    id: geminiId,
+                    name: fc.name,
+                    response: { result: { success: true, note: 'Already processed similar request' } }
+                  }]
+                });
+                continue;
+              }
+
+              // New unique call - track it and forward to client
+              fc.id = internalId;  // Client uses internal ID
+              pendingToolCalls.set(dedupKey, {
+                originalId: internalId,
+                geminiId: geminiId,
+                duplicateIds: [],
+                duplicateGeminiIds: [],
+                name: fc.name,
+                timestamp: now,
+                responded: false,
+              });
+
+              // Track action for semantic dedup
+              if (aKey) {
+                recentActions.set(aKey, now);
+              }
+
+              uniqueCalls.push(fc);
+              console.log(`[DEBUG] Added new pending: ${fc.name} (geminiId: ${geminiId}, internalId: ${internalId})`);
+            }
+
+            // Only forward unique calls to client
+            if (uniqueCalls.length > 0) {
+              const dedupedMessage = {
+                ...message,
+                toolCall: { functionCalls: uniqueCalls }
+              };
+              if (clientWs.readyState === WebSocket.OPEN) {
+                clientWs.send(JSON.stringify({ type: 'message', data: dedupedMessage }));
+              }
+            }
+            return; // Don't forward the original message
+          }
+
+          // Log when model generates audio
+          if (message.serverContent?.modelTurn?.parts?.some((p: any) => p.inlineData)) {
+            // Check audio cooldown first (aggressive duplicate prevention)
+            if (now < audioCooldownUntil) {
+              if (!skipCurrentAudio) {
+                console.log('[AUDIO-COOLDOWN] Skipping audio - in cooldown period');
+                skipCurrentAudio = true;
+              }
+              return;
+            }
+
+            // Check if this is the start of a new turn after a recent turn complete
+            // If the transcription starts similar to the last one, skip this audio
+            if (now - lastTurnCompleteTime < 2000 && lastCompletedTranscription.length > 20) {
+              // Quick check: are we likely seeing a duplicate response?
+              const currentStart = currentTranscription.toLowerCase().substring(0, 30);
+              const lastStart = lastCompletedTranscription.toLowerCase().substring(0, 30);
+              if (currentStart.length > 10 && isSimilarTranscription(currentStart, lastStart)) {
+                if (!skipCurrentAudio) {
+                  console.log('[AUDIO-DEDUP] Detected duplicate response starting, will skip audio');
+                  skipCurrentAudio = true;
+                }
+              }
+            }
+
+            if (skipCurrentAudio) {
+              // Don't forward audio for duplicate responses
+              return;
+            }
+            console.log('[GEMINI→] Audio chunk received');
+            // DON'T clear dedup state here - model sometimes calls tools AFTER audio
+            // Dedup state is cleared by time-based cleanup at start of onmessage
+          }
+
+          // Log output transcription and track for dedup
+          if (message.serverContent?.outputTranscription?.text) {
+            const transcriptText = message.serverContent.outputTranscription.text;
+            console.log('[GEMINI→] Output transcription:', transcriptText);
+
+            // Accumulate transcription
+            currentTranscription += transcriptText;
+            lastTranscriptionTime = now;
+          }
+
+          // Log input transcription (helps debug what model heard from user)
+          if (message.serverContent?.inputTranscription?.text) {
+            console.log('[GEMINI→] Input transcription (user said):', message.serverContent.inputTranscription.text);
+            // Reset ALL audio tracking on new user input - they asked something new
+            currentTranscription = '';
+            lastCompletedTranscription = '';
+            skipCurrentAudio = false;
+            audioCooldownUntil = 0; // Clear cooldown for new input
+          }
+
+          // Log turn completion signals and check for duplicate responses
+          if (message.serverContent?.turnComplete) {
+            console.log('[GEMINI→] Turn complete' + (skipCurrentAudio ? ' (audio was skipped - duplicate)' : ''));
+
+            if (skipCurrentAudio) {
+              // This turn was a duplicate, reset and skip forwarding
+              skipCurrentAudio = false;
+              currentTranscription = '';
+              return; // Don't forward turn complete for skipped audio
+            }
+
+            // Save this transcription for future duplicate detection
+            if (currentTranscription.length > 20) {
+              lastCompletedTranscription = currentTranscription;
+              lastTurnCompleteTime = now;
+              // Set audio cooldown to prevent immediate duplicate responses
+              audioCooldownUntil = now + AUDIO_COOLDOWN_MS;
+              console.log(`[AUDIO-COOLDOWN] Set cooldown for ${AUDIO_COOLDOWN_MS}ms`);
+            }
+            currentTranscription = '';
+          }
+
+          // Log if generation was interrupted
+          if (message.serverContent?.interrupted) {
+            console.log('[GEMINI→] Generation interrupted by user');
+          }
+
+          // Extract and log reasoning thoughts for transparency
+          const parts = message.serverContent?.modelTurn?.parts || [];
+          for (const part of parts) {
+            if (part.thought) {
+              console.log('--- REASONING ---', part.text);
+            }
+          }
+
+          // Forward Gemini messages to client (non-tool-call messages)
           if (clientWs.readyState === WebSocket.OPEN) {
             clientWs.send(JSON.stringify({ type: 'message', data: message }));
           }
         },
         onclose: (event: any) => {
           console.log('Gemini session closed', event);
-          if (clientWs.readyState === WebSocket.OPEN && !isReconnecting) {
+          if (clientWs.readyState === WebSocket.OPEN) {
             clientWs.send(JSON.stringify({ type: 'closed' }));
             clientWs.close();
           }
@@ -671,11 +998,7 @@ wss.on('connection', async (clientWs: WebSocket) => {
         }
       }
     });
-  };
 
-  try {
-    // Connect to Gemini Live API via Vertex AI
-    geminiSession = await createGeminiSession();
   } catch (error: any) {
     console.error('Failed to connect to Gemini Live:', error);
     clientWs.send(JSON.stringify({ type: 'error', error: error.message }));
@@ -689,7 +1012,11 @@ wss.on('connection', async (clientWs: WebSocket) => {
       const message = JSON.parse(data.toString());
 
       if (message.type === 'audio') {
-        // Send audio to Gemini
+        // Send audio to Gemini (log periodically to avoid spam)
+        const audioSize = message.data?.length || 0;
+        if (Math.random() < 0.05) { // Log ~5% of audio chunks
+          console.log(`[→GEMINI] Audio chunk (${audioSize} bytes)`);
+        }
         await geminiSession.sendRealtimeInput({
           media: {
             data: message.data,
@@ -697,28 +1024,68 @@ wss.on('connection', async (clientWs: WebSocket) => {
           }
         });
       } else if (message.type === 'toolResponse') {
-        // Check for loops before sending
         const responses = message.responses || [];
-        let shouldSend = true;
 
-        for (const resp of responses) {
-          const key = `${resp.name}:${JSON.stringify(resp.response?.result)}`;
-          const count = (toolCallCounts.get(key) || 0) + 1;
-          toolCallCounts.set(key, count);
+        // Cache results and respond to any pending duplicates
+        // Also rewrite responses to use original Gemini IDs
+        const geminiResponses: any[] = [];
 
-          if (count > MAX_TOOL_CALLS) {
-            console.warn(`Server loop prevention: ${resp.name} called ${count} times, NOT sending response to break loop`);
-            shouldSend = false;
+        for (const r of responses) {
+          // Find and update the pending entry with result
+          for (const [key, entry] of pendingToolCalls) {
+            if (entry.originalId === r.id) {
+              // Skip if already responded (prevents duplicate responses)
+              if (entry.responded) {
+                console.log(`[SERVER] Skipping already-responded entry: ${entry.name}`);
+                break;
+              }
+
+              entry.result = r.response?.result;
+              entry.responded = true;
+
+              // Respond to any duplicates that arrived before we had the result
+              for (let i = 0; i < entry.duplicateGeminiIds.length; i++) {
+                const dupGeminiId = entry.duplicateGeminiIds[i];
+                console.log(`[SERVER] Sending response for duplicate: ${entry.name} (geminiId: ${dupGeminiId})`);
+                await geminiSession.sendToolResponse({
+                  functionResponses: [{
+                    id: dupGeminiId,
+                    name: entry.name,
+                    response: r.response
+                  }]
+                });
+              }
+              // Clear duplicates after responding
+              entry.duplicateIds = [];
+              entry.duplicateGeminiIds = [];
+
+              // Build response with original Gemini ID
+              geminiResponses.push({
+                id: entry.geminiId,
+                name: entry.name,
+                response: r.response
+              });
+              break;
+            }
           }
         }
 
-        if (shouldSend) {
-          console.log('Sending tool response:', JSON.stringify(message.responses, null, 2));
-          await geminiSession.sendToolResponse({
-            functionResponses: message.responses
-          });
+        // DON'T delete entries - keep them for dedup window
+        // They'll be cleaned up by the time-based cleanup in onmessage
+
+        // Send the original responses with Gemini IDs
+        if (geminiResponses.length > 0) {
+          console.log(`[→GEMINI] Sending ${geminiResponses.length} tool response(s): ${geminiResponses.map((r: any) => `${r.name}(geminiId:${r.id})`).join(', ')}`);
+          try {
+            await geminiSession.sendToolResponse({
+              functionResponses: geminiResponses
+            });
+            console.log(`[→GEMINI] Tool response sent successfully`);
+          } catch (sendError) {
+            console.error('[→GEMINI] Error sending tool response:', sendError);
+          }
         } else {
-          console.log('Skipping tool response to break loop');
+          console.log(`[DEBUG] No matching pending entries found for tool responses`);
         }
       }
     } catch (error) {

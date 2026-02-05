@@ -1,16 +1,20 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Task } from '../types';
-import { CheckSquare, Circle, CheckCircle2, Clock, FileText, Pencil, Trash2, X, Check } from 'lucide-react';
+import { CheckSquare, Circle, CheckCircle2, Clock, FileText, Pencil, Trash2, X, Check, Square, ListChecks } from 'lucide-react';
 
 interface Props {
   tasks: Task[];
   onUpdateTask?: (id: string, updates: Partial<Task>) => void;
   onDeleteTask?: (id: string) => void;
+  onDeleteTasks?: (ids: string[]) => void;
+  onDeleteAllTasks?: () => void;
 }
 
-export const TaskList: React.FC<Props> = ({ tasks, onUpdateTask, onDeleteTask }) => {
+export const TaskList: React.FC<Props> = ({ tasks, onUpdateTask, onDeleteTask, onDeleteTasks, onDeleteAllTasks }) => {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<Partial<Task>>({});
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
   const getPriorityColor = (p: string) => {
     switch (p) {
@@ -52,25 +56,104 @@ export const TaskList: React.FC<Props> = ({ tasks, onUpdateTask, onDeleteTask })
   const pendingTasks = tasks.filter(t => t.status !== 'completed');
   const completedTasks = tasks.filter(t => t.status === 'completed');
 
+  const selectedCount = selectedIds.length;
+  const allTaskIds = useMemo(() => tasks.map(t => t.id), [tasks]);
+
+  const toggleSelect = (taskId: string) => {
+    setSelectedIds(prev => prev.includes(taskId) ? prev.filter(id => id !== taskId) : [...prev, taskId]);
+  };
+
+  const toggleSelectAll = () => {
+    setSelectedIds(prev => prev.length === allTaskIds.length ? [] : allTaskIds);
+  };
+
+  const exitSelection = () => {
+    setSelectionMode(false);
+    setSelectedIds([]);
+  };
+
+  const deleteSelected = () => {
+    if (!onDeleteTasks || selectedIds.length === 0) return;
+    onDeleteTasks(selectedIds);
+    exitSelection();
+  };
+
+  const deleteAll = () => {
+    if (!onDeleteAllTasks || tasks.length === 0) return;
+    onDeleteAllTasks();
+    exitSelection();
+  };
+
   return (
     <div className="h-full flex flex-col bg-white/80 backdrop-blur-sm border border-gray-200 rounded-2xl overflow-hidden shadow-lg">
-      <div className="p-4 border-b border-gray-200 bg-gray-50/80 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-teal-dark uppercase tracking-wider flex items-center gap-2">
-          <CheckSquare size={16} className="text-emerald-500"/>
-          Tasks
-        </h2>
-        <span className="text-xs text-gray-500 bg-gray-200 px-2 py-1 rounded-full">{pendingTasks.length}</span>
+      <div className="p-4 border-b border-gray-200 bg-gray-50/80 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-semibold text-teal-dark uppercase tracking-wider flex items-center gap-2">
+            <CheckSquare size={16} className="text-emerald-500"/>
+            Tasks
+          </h2>
+          <span className="text-xs text-gray-500 bg-gray-200 px-2 py-1 rounded-full">{pendingTasks.length}</span>
+          {selectionMode && (
+            <span className="text-[10px] text-gray-500 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded-full">{selectedCount} selected</span>
+          )}
+        </div>
+
+        {tasks.length > 0 && (
+          <div className="flex items-center gap-1">
+            {selectionMode ? (
+              <>
+                <button
+                  onClick={toggleSelectAll}
+                  className="px-2 py-1 text-xs flex items-center gap-1 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-100"
+                >
+                  <ListChecks size={14} />
+                  {selectedIds.length === allTaskIds.length ? 'Clear all' : 'Select all'}
+                </button>
+                <button
+                  onClick={deleteSelected}
+                  disabled={selectedCount === 0}
+                  className={`px-2 py-1 text-xs flex items-center gap-1 rounded-lg border ${selectedCount ? 'border-rose-200 text-rose-600 hover:bg-rose-50' : 'border-gray-200 text-gray-300 cursor-not-allowed'}`}
+                >
+                  <Trash2 size={14} /> Delete selected
+                </button>
+                <button
+                  onClick={exitSelection}
+                  className="px-2 py-1 text-xs flex items-center gap-1 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-100"
+                >
+                  <X size={14} /> Done
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={() => setSelectionMode(true)}
+                  className="px-2 py-1 text-xs flex items-center gap-1 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-100"
+                >
+                  <Square size={14} /> Select
+                </button>
+                {onDeleteAllTasks && (
+                  <button
+                    onClick={deleteAll}
+                    className="px-2 py-1 text-xs flex items-center gap-1 rounded-lg border border-rose-200 text-rose-600 hover:bg-rose-50"
+                  >
+                    <Trash2 size={14} /> Delete all
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-3 scrollbar-hide">
         {tasks.length === 0 && (
            <div className="text-gray-400 text-center italic mt-10 text-sm">
-            No pending tasks.
+            No tasks yet.
           </div>
         )}
 
         {pendingTasks.map((task) => (
-          <div key={task.id} className="group bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl p-3 transition-all">
+          <div key={task.id} className={`group bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl p-3 transition-all ${selectedIds.includes(task.id) ? 'ring-2 ring-teal-200' : ''}`}>
             {editingId === task.id ? (
               <div className="space-y-3">
                 <input
@@ -115,12 +198,21 @@ export const TaskList: React.FC<Props> = ({ tasks, onUpdateTask, onDeleteTask })
               </div>
             ) : (
               <div className="flex items-start gap-3">
-                <button
-                  onClick={() => toggleComplete(task)}
-                  className="mt-1 text-gray-400 hover:text-emerald-500 transition-colors"
-                >
-                  <Circle size={18} />
-                </button>
+                {selectionMode ? (
+                  <button
+                    onClick={() => toggleSelect(task.id)}
+                    className="mt-1 text-gray-400 hover:text-emerald-500 transition-colors"
+                  >
+                    {selectedIds.includes(task.id) ? <CheckCircle2 size={18} className="text-emerald-500" /> : <Circle size={18} />}
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => toggleComplete(task)}
+                    className="mt-1 text-gray-400 hover:text-emerald-500 transition-colors"
+                  >
+                    <Circle size={18} />
+                  </button>
+                )}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between mb-1">
                     <p className="text-sm font-medium text-teal-dark truncate">{task.title}</p>
@@ -128,19 +220,23 @@ export const TaskList: React.FC<Props> = ({ tasks, onUpdateTask, onDeleteTask })
                       <span className={`text-[10px] px-1.5 py-0.5 rounded border ${getPriorityColor(task.priority)}`}>
                         {task.priority}
                       </span>
-                      <button
-                        onClick={() => startEdit(task)}
-                        className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-teal-primary transition-all"
-                      >
-                        <Pencil size={14} />
-                      </button>
-                      {onDeleteTask && (
-                        <button
-                          onClick={() => onDeleteTask(task.id)}
-                          className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-rose-500 transition-all"
-                        >
-                          <Trash2 size={14} />
-                        </button>
+                      {!selectionMode && (
+                        <>
+                          <button
+                            onClick={() => startEdit(task)}
+                            className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-teal-primary transition-all"
+                          >
+                            <Pencil size={14} />
+                          </button>
+                          {onDeleteTask && (
+                            <button
+                              onClick={() => onDeleteTask(task.id)}
+                              className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-rose-500 transition-all"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
+                        </>
                       )}
                     </div>
                   </div>
@@ -170,18 +266,27 @@ export const TaskList: React.FC<Props> = ({ tasks, onUpdateTask, onDeleteTask })
               <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Completed ({completedTasks.length})</p>
             </div>
             {completedTasks.map((task) => (
-              <div key={task.id} className="group bg-gray-50/50 border border-gray-100 rounded-xl p-3 transition-all opacity-60">
+              <div key={task.id} className={`group bg-gray-50/50 border border-gray-100 rounded-xl p-3 transition-all opacity-60 ${selectedIds.includes(task.id) ? 'ring-2 ring-teal-200' : ''}`}>
                 <div className="flex items-start gap-3">
-                  <button
-                    onClick={() => toggleComplete(task)}
-                    className="mt-1 text-emerald-500 hover:text-gray-400 transition-colors"
-                  >
-                    <CheckCircle2 size={18} />
-                  </button>
+                  {selectionMode ? (
+                    <button
+                      onClick={() => toggleSelect(task.id)}
+                      className="mt-1 text-gray-400 hover:text-emerald-500 transition-colors"
+                    >
+                      {selectedIds.includes(task.id) ? <CheckCircle2 size={18} className="text-emerald-500" /> : <Circle size={18} />}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => toggleComplete(task)}
+                      className="mt-1 text-emerald-500 hover:text-gray-400 transition-colors"
+                    >
+                      <CheckCircle2 size={18} />
+                    </button>
+                  )}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between mb-1">
                       <p className="text-sm font-medium text-gray-400 truncate line-through">{task.title}</p>
-                      {onDeleteTask && (
+                      {!selectionMode && onDeleteTask && (
                         <button
                           onClick={() => onDeleteTask(task.id)}
                           className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-rose-500 transition-all"

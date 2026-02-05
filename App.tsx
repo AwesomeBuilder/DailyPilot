@@ -132,12 +132,8 @@ function App() {
 
         if (tasksResponse.ok) {
           const data = await tasksResponse.json();
-          if (data.tasks && data.tasks.length > 0) {
-            setTasks(prev => {
-              const existingIds = new Set(prev.map(t => t.id));
-              const newTasks = data.tasks.filter((t: Task) => !existingIds.has(t.id));
-              return [...prev, ...newTasks];
-            });
+          if (data.tasks) {
+            setTasks(data.tasks);
           }
         }
       } catch (error) {
@@ -192,6 +188,23 @@ function App() {
   const getLocalISOString = (date: Date) => {
     const offset = date.getTimezoneOffset() * 60000;
     return (new Date(date.getTime() - offset)).toISOString().slice(0, -1);
+  };
+
+  // Simple delay helper for throttling API calls
+  const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+  // Delete tasks sequentially to avoid triggering rate limits / quotas
+  const deleteTasksSequential = async (ids: string[]) => {
+    const results: { taskId: string; success: boolean; error?: string }[] = [];
+    for (const taskId of ids) {
+      const result = await deleteGoogleTask(taskId);
+      results.push({ taskId, ...result });
+      // If quota is exceeded, break early to avoid more failing calls
+      if (!result.success && (result.error || '').toLowerCase().includes('quota')) break;
+      // Small delay to stay under per-second quotas
+      await delay(120);
+    }
+    return results;
   };
 
   // Fetch calendar events from Google Calendar API
@@ -275,6 +288,96 @@ function App() {
       return { success: true, task: data.task };
     } catch (error: any) {
       console.error('Task create error:', error);
+      return { success: false, error: error.message };
+    }
+  };
+
+  // Update task in Google Tasks
+  const updateGoogleTask = async (
+    taskId: string,
+    updates: { title?: string; description?: string; deadline?: string; status?: string }
+  ): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const response = await fetch(`${API_BASE}/api/tasks/@default/${taskId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(updates),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to update task');
+      }
+
+      return { success: true };
+    } catch (error: any) {
+      console.error('Task update error:', error);
+      return { success: false, error: error.message };
+    }
+  };
+
+  // Delete task from Google Tasks
+  const deleteGoogleTask = async (taskId: string): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const response = await fetch(`${API_BASE}/api/tasks/@default/${taskId}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to delete task');
+      }
+
+      return { success: true };
+    } catch (error: any) {
+      console.error('Task delete error:', error);
+      return { success: false, error: error.message };
+    }
+  };
+
+  // Update event in Google Calendar
+  const updateCalendarEvent = async (
+    eventId: string,
+    updates: { title?: string; description?: string; start?: string; duration?: string; location?: string }
+  ): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const response = await fetch(`${API_BASE}/api/calendar/events/${eventId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(updates),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to update event');
+      }
+
+      return { success: true };
+    } catch (error: any) {
+      console.error('Calendar update error:', error);
+      return { success: false, error: error.message };
+    }
+  };
+
+  // Delete event from Google Calendar
+  const deleteCalendarEvent = async (eventId: string): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const response = await fetch(`${API_BASE}/api/calendar/events/${eventId}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to delete event');
+      }
+
+      return { success: true };
+    } catch (error: any) {
+      console.error('Calendar delete error:', error);
       return { success: false, error: error.message };
     }
   };
@@ -427,6 +530,16 @@ function App() {
         };
 
       case 'add_task':
+        // Validate args - reject garbage (model sometimes sends result objects as args)
+        if (!args.title || typeof args.title !== 'string' || args.title.length < 2) {
+          console.warn('Invalid add_task args:', args);
+          return { success: false, error: 'Invalid task: title is required' };
+        }
+        if (args.result || args.success || args.taskId) {
+          console.warn('Rejected garbage add_task args:', args);
+          return { success: false, error: 'Invalid task args - do not pass result objects' };
+        }
+
         // If authenticated, also create in Google Tasks
         let taskId = Date.now().toString() + Math.random();
 
@@ -445,7 +558,7 @@ function App() {
           id: taskId,
           title: args.title,
           description: args.description,
-          priority: args.priority,
+          priority: args.priority || 'Medium',
           deadline: args.deadline,
           status: 'pending',
         };
@@ -492,17 +605,86 @@ function App() {
         }]);
         return { success: true, eventId: eventData.id };
 
+      case 'delete_event':
+        let deletedEventTitle = args.eventId; // fallback to ID if title not found
+
+        // If authenticated, delete from Google Calendar directly (don't rely on local state)
+        if (isAuthenticated) {
+          const deleteResult = await deleteCalendarEvent(args.eventId);
+          if (!deleteResult.success) {
+            console.error('Failed to delete from Google Calendar:', deleteResult.error);
+            return { success: false, error: deleteResult.error || 'Failed to delete from Google Calendar' };
+          }
+        }
+
+        // Update local state using functional update to avoid stale closure
+        setEvents(prev => {
+          const eventToDelete = prev.find(e => e.id === args.eventId);
+          if (eventToDelete) {
+            deletedEventTitle = eventToDelete.title;
+          }
+          return prev.filter(e => e.id !== args.eventId);
+        });
+
+        setLogs(prev => [...prev, {
+          id: Date.now().toString() + '-action',
+          timestamp: new Date(),
+          content: `Deleted event: ${deletedEventTitle}${args.reason ? ` (${args.reason})` : ''}`,
+          type: 'action'
+        }]);
+        return { success: true, deletedEvent: deletedEventTitle };
+
+      case 'delete_task':
+        let deletedTaskTitle = args.taskId; // fallback to ID if title not found
+
+        // Update local state
+        setTasks(prev => {
+          const taskToDelete = prev.find(t => t.id === args.taskId);
+          if (taskToDelete) {
+            deletedTaskTitle = taskToDelete.title;
+          }
+          return prev.filter(t => t.id !== args.taskId);
+        });
+
+        setLogs(prev => [...prev, {
+          id: Date.now().toString() + '-action',
+          timestamp: new Date(),
+          content: `Deleted task: ${deletedTaskTitle}${args.reason ? ` (${args.reason})` : ''}`,
+          type: 'action'
+        }]);
+        return { success: true, deletedTask: deletedTaskTitle };
+
       case 'save_suggestion':
+        // Helper to generate URL based on linkType if not provided
+        const generateUrl = (text: string, linkType?: string): string | undefined => {
+          const encoded = encodeURIComponent(text);
+          switch (linkType) {
+            case 'google_search':
+              return `https://www.google.com/search?q=${encoded}`;
+            case 'google_maps':
+              return `https://www.google.com/maps/search/?api=1&query=${encoded}`;
+            case 'store':
+              return `https://www.amazon.com/s?k=${encoded}`;
+            default:
+              return undefined;
+          }
+        };
+
         const newSuggestion: Suggestion = {
             id: Date.now().toString() + Math.random(),
             title: args.title,
             category: args.category,
-            // Normalize items: support both legacy strings and new structured objects
-            items: args.items.map((item: any) =>
-                typeof item === 'string'
-                    ? { text: item }  // Backward compatibility for plain strings
-                    : item            // Use structured object from agent
-            )
+            // Normalize items and auto-generate URLs if missing
+            items: args.items.map((item: any) => {
+                if (typeof item === 'string') {
+                    return { text: item };
+                }
+                // Auto-generate URL if linkType provided but no URL
+                if (item.linkType && !item.url) {
+                    return { ...item, url: generateUrl(item.text, item.linkType) };
+                }
+                return item;
+            })
         };
         setSuggestions(prev => [...prev, newSuggestion]);
         setLogs(prev => [...prev, {
@@ -566,34 +748,158 @@ function App() {
   }, [isAuthenticated]);
 
   // --- CRUD Handlers for Tasks ---
-  const handleUpdateTask = useCallback((id: string, updates: Partial<Task>) => {
+  const handleUpdateTask = useCallback(async (id: string, updates: Partial<Task>) => {
+    // Update local state immediately for responsiveness
     setTasks(prev => prev.map(task =>
       task.id === id ? { ...task, ...updates } : task
     ));
-  }, []);
 
-  const handleDeleteTask = useCallback((id: string) => {
+    // Sync to Google Tasks if authenticated
+    if (isAuthenticated) {
+      const result = await updateGoogleTask(id, {
+        title: updates.title,
+        description: updates.description,
+        deadline: updates.deadline,
+        status: updates.status,
+      });
+      if (!result.success) {
+        console.error('Failed to sync task update to Google:', result.error);
+        // Optionally show error to user
+      }
+    }
+  }, [isAuthenticated]);
+
+  const handleDeleteTask = useCallback(async (id: string) => {
+    const prevTasks = tasks;
+    // Optimistic removal
     setTasks(prev => prev.filter(task => task.id !== id));
-  }, []);
+
+    if (isAuthenticated) {
+      const result = await deleteGoogleTask(id);
+      if (!result.success) {
+        console.error('Failed to sync task deletion to Google:', result.error);
+        // Roll back and notify
+        setTasks(prevTasks);
+        setAlert({
+          id: Date.now().toString(),
+          message: `Couldn't delete task (Google Tasks): ${result.error || 'Unknown error'}`,
+          severity: 'warning'
+        });
+      } else {
+        // Ensure local stays in sync
+        setTasks(current => current.filter(task => task.id !== id));
+      }
+    }
+  }, [isAuthenticated, tasks]);
+
+  const handleDeleteTasks = useCallback(async (ids: string[]) => {
+    if (!ids.length) return;
+    const prevTasks = tasks;
+
+    // Optimistic removal
+    setTasks(prev => prev.filter(task => !ids.includes(task.id)));
+
+    if (isAuthenticated) {
+      const results = await deleteTasksSequential(ids);
+      const successIds = results.filter(r => r.success).map(r => r.taskId);
+      const failed = results.filter(r => !r.success);
+
+      if (failed.length > 0) {
+        // Roll back failures (keep successes removed)
+        setTasks(prevTasks.filter(task => !successIds.includes(task.id)));
+        setAlert({
+          id: Date.now().toString(),
+          message: `Some tasks couldn't be deleted in Google (kept locally): ${failed[0].error || 'Unknown error'}.`,
+          severity: 'warning'
+        });
+      }
+    }
+  }, [isAuthenticated, tasks]);
+
+  const handleDeleteAllTasks = useCallback(async () => {
+    if (!tasks.length) return;
+    const prevTasks = tasks;
+    const ids = tasks.map(t => t.id);
+
+    // Optimistic clear
+    setTasks([]);
+
+    if (isAuthenticated) {
+      const results = await deleteTasksSequential(ids);
+      const successIds = results.filter(r => r.success).map(r => r.taskId);
+      const failed = results.filter(r => !r.success);
+
+      if (failed.length > 0) {
+        // Restore only failed tasks
+        setTasks(prevTasks.filter(task => failed.some(f => f.taskId === task.id)));
+        setAlert({
+          id: Date.now().toString(),
+          message: `Couldn't delete all tasks in Google (restored ${failed.length} locally): ${failed[0].error || 'Unknown error'}.`,
+          severity: 'warning'
+        });
+      }
+    }
+  }, [tasks, isAuthenticated]);
 
   // --- CRUD Handlers for Events ---
-  const handleUpdateEvent = useCallback((id: string, updates: Partial<CalendarEvent>) => {
+  const handleUpdateEvent = useCallback(async (id: string, updates: Partial<CalendarEvent>) => {
+    // Update local state immediately for responsiveness
     setEvents(prev => prev.map(event =>
       event.id === id ? { ...event, ...updates } : event
     ));
-  }, []);
 
-  const handleDeleteEvent = useCallback((id: string) => {
+    // Sync to Google Calendar if authenticated
+    if (isAuthenticated) {
+      const result = await updateCalendarEvent(id, {
+        title: updates.title,
+        description: updates.description,
+        start: updates.start,
+        duration: updates.duration,
+        location: updates.location,
+      });
+      if (!result.success) {
+        console.error('Failed to sync event update to Google:', result.error);
+        // Optionally show error to user
+      }
+    }
+  }, [isAuthenticated]);
+
+  const handleDeleteEvent = useCallback(async (id: string) => {
+    // Update local state immediately
     setEvents(prev => prev.filter(event => event.id !== id));
-  }, []);
 
-  const handleAddEvent = useCallback((event: Omit<CalendarEvent, 'id'>) => {
-    const newEvent: CalendarEvent = {
+    // Sync to Google Calendar if authenticated
+    if (isAuthenticated) {
+      const result = await deleteCalendarEvent(id);
+      if (!result.success) {
+        console.error('Failed to sync event deletion to Google:', result.error);
+        // Optionally show error to user
+      }
+    }
+  }, [isAuthenticated]);
+
+  const handleAddEvent = useCallback(async (event: Omit<CalendarEvent, 'id'>) => {
+    let newEvent: CalendarEvent = {
       ...event,
       id: Date.now().toString() + Math.random(),
     };
+
+    // Sync to Google Calendar if authenticated
+    if (isAuthenticated) {
+      const result = await createCalendarEvent({
+        title: event.title,
+        description: event.description,
+        start: event.start,
+        duration: event.duration,
+        location: event.location,
+      });
+      if (result.success && result.event) {
+        newEvent = result.event;
+      }
+    }
+
     setEvents(prev => [...prev, newEvent]);
-  }, []);
+  }, [isAuthenticated]);
 
   // --- CRUD Handlers for Drafts ---
   const handleUpdateDraft = useCallback((id: string, updates: Partial<MessageDraft>) => {
@@ -617,7 +923,16 @@ function App() {
                 if (!active) setIsRecording(false);
             },
             (err) => setError(err),
-            (vol) => setVolume(vol)
+            (vol) => setVolume(vol),
+            // Handle reasoning thoughts from Gemini's thinkingConfig
+            (thought) => {
+                setLogs(prev => [...prev, {
+                    id: Date.now().toString() + '-thought',
+                    timestamp: new Date(),
+                    content: thought,
+                    type: 'reasoning' as const
+                }]);
+            }
         );
     } catch (e: any) {
         setError(e.message);
@@ -974,7 +1289,15 @@ function App() {
           {/* Content Panel - Slides in from right */}
           {displayedView !== 'home' && (
             <div key={displayedView} className={`content-panel absolute top-0 right-4 w-[48%] max-w-xl h-[50vh] md:h-[60vh] hidden md:block ${isPanelExiting ? 'slide-out-right z-0' : 'slide-in-right z-10'}`}>
-              {displayedView === 'tasks' && <TaskList tasks={tasks} onUpdateTask={handleUpdateTask} onDeleteTask={handleDeleteTask} />}
+              {displayedView === 'tasks' && (
+                <TaskList
+                  tasks={tasks}
+                  onUpdateTask={handleUpdateTask}
+                  onDeleteTask={handleDeleteTask}
+                  onDeleteTasks={handleDeleteTasks}
+                  onDeleteAllTasks={handleDeleteAllTasks}
+                />
+              )}
               {displayedView === 'calendar' && <CalendarView events={events} tasks={tasks} onUpdateEvent={handleUpdateEvent} onDeleteEvent={handleDeleteEvent} onAddEvent={handleAddEvent} />}
               {displayedView === 'notes' && <ReasoningLog logs={logs} />}
               {displayedView === 'drafts' && <MessageDraftList drafts={drafts} onUpdateDraft={handleUpdateDraft} onDeleteDraft={handleDeleteDraft} />}
@@ -996,7 +1319,15 @@ function App() {
             <div className="w-12 h-1.5 bg-gray-300 rounded-full" />
           </button>
           <div className="h-[calc(100%-32px)] px-4 pb-4 overflow-auto">
-            {activeView === 'tasks' && <TaskList tasks={tasks} onUpdateTask={handleUpdateTask} onDeleteTask={handleDeleteTask} />}
+            {activeView === 'tasks' && (
+              <TaskList
+                tasks={tasks}
+                onUpdateTask={handleUpdateTask}
+                onDeleteTask={handleDeleteTask}
+                onDeleteTasks={handleDeleteTasks}
+                onDeleteAllTasks={handleDeleteAllTasks}
+              />
+            )}
             {activeView === 'calendar' && <CalendarView events={events} tasks={tasks} onUpdateEvent={handleUpdateEvent} onDeleteEvent={handleDeleteEvent} onAddEvent={handleAddEvent} />}
             {activeView === 'notes' && <ReasoningLog logs={logs} />}
             {activeView === 'drafts' && <MessageDraftList drafts={drafts} onUpdateDraft={handleUpdateDraft} onDeleteDraft={handleDeleteDraft} />}
