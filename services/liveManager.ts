@@ -4,15 +4,22 @@ type StatusHandler = (active: boolean) => void;
 type ErrorHandler = (error: string) => void;
 type AudioVolumeHandler = (volume: number) => void;
 type ThoughtHandler = (thought: string) => void;
+type ActivityHandler = (state: 'idle' | 'listening' | 'thinking' | 'speaking') => void;
+type FallbackTextHandler = (text: string) => void;
 
-// Server WebSocket URL
-const WS_URL = import.meta.env.DEV
-  ? 'ws://localhost:3001/api/live'
-  : `wss://${window.location.host}/api/live`;
+type LiveProvider = 'vertex' | 'public';
+
+function buildWsUrl(provider: LiveProvider) {
+  const base = import.meta.env.DEV
+    ? 'ws://localhost:3001/api/live'
+    : `wss://${window.location.host}/api/live`;
+  return `${base}?provider=${provider}`;
+}
 
 export class LiveManager {
   private ws: WebSocket | null = null;
   private manuallyDisconnecting = false;
+  private provider: LiveProvider = 'vertex';
 
   private inputAudioContext: AudioContext | null = null;
   private outputAudioContext: AudioContext | null = null;
@@ -29,22 +36,33 @@ export class LiveManager {
   private onError: ErrorHandler;
   private onVolume: AudioVolumeHandler;
   private onThought: ThoughtHandler;
+  private onActivity: ActivityHandler;
+  private onFallbackText: FallbackTextHandler;
 
   public isConnected = false;
   public isMicActive = false;
+  private static readonly TOOL_TIMEOUT_MS = 15000;
 
   constructor(
     onToolCall: ToolHandler,
     onStatusChange: StatusHandler,
     onError: ErrorHandler,
     onVolume: AudioVolumeHandler,
-    onThought?: ThoughtHandler
+    onThought?: ThoughtHandler,
+    onActivity?: ActivityHandler,
+    onFallbackText?: FallbackTextHandler
   ) {
     this.onToolCall = onToolCall;
     this.onStatusChange = onStatusChange;
     this.onError = onError;
     this.onVolume = onVolume;
     this.onThought = onThought || (() => {});
+    this.onActivity = onActivity || (() => {});
+    this.onFallbackText = onFallbackText || (() => {});
+  }
+
+  setProvider(provider: LiveProvider) {
+    this.provider = provider;
   }
 
   async connect() {
@@ -52,6 +70,7 @@ export class LiveManager {
 
     try {
       this.manuallyDisconnecting = false;
+      console.log(`[WS] Connecting Live API (provider=${this.provider})`);
 
       // Initialize Audio Contexts
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
@@ -59,7 +78,7 @@ export class LiveManager {
       this.outputAudioContext = new AudioContextClass({ sampleRate: 24000 });
 
       // Connect to server WebSocket
-      this.ws = new WebSocket(WS_URL);
+      this.ws = new WebSocket(buildWsUrl(this.provider));
 
       this.ws.onopen = () => {
         console.log('Connected to Live API proxy');
@@ -74,6 +93,7 @@ export class LiveManager {
           if (msg.type === 'connected' || msg.type === 'reconnected') {
             this.isConnected = true;
             this.onStatusChange(true);
+            this.onActivity('idle');
             // Start audio immediately upon connect
             this.startAudio();
             if (msg.type === 'reconnected') {
@@ -100,6 +120,14 @@ export class LiveManager {
           } else if (msg.type === 'closed') {
             this.isConnected = false;
             this.onStatusChange(false);
+            this.onActivity('idle');
+          } else if (msg.type === 'activity') {
+            if (msg.state) this.onActivity(msg.state);
+          } else if (msg.type === 'fallback_text') {
+            if (msg.text) {
+              console.log('[WS] Received fallback_text');
+              this.onFallbackText(msg.text);
+            }
           }
         } catch (e) {
           console.error('Error parsing WebSocket message:', e);
@@ -109,6 +137,7 @@ export class LiveManager {
       this.ws.onclose = (e) => {
         this.isConnected = false;
         this.onStatusChange(false);
+        this.onActivity('idle');
         if (!this.manuallyDisconnecting) {
           console.log('WebSocket closed unexpectedly', e);
           this.onError('Session disconnected.');
@@ -223,7 +252,12 @@ export class LiveManager {
       for (const fc of message.toolCall.functionCalls) {
         try {
           console.log(`[TOOL] Executing: ${fc.name}`, fc.args);
-          const result = await this.onToolCall(fc.name, fc.args);
+          const { result, durationMs } = await this.runToolWithTimeout(
+            fc.name,
+            fc.args,
+            LiveManager.TOOL_TIMEOUT_MS
+          );
+          console.log(`[TOOL] Completed: ${fc.name} in ${durationMs}ms`);
           responses.push({
             id: fc.id,
             name: fc.name,
@@ -295,6 +329,22 @@ export class LiveManager {
     }
   }
 
+  private async runToolWithTimeout(name: string, args: any, timeoutMs: number): Promise<{ result: any; durationMs: number }> {
+    const start = performance.now();
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    try {
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error(`Tool "${name}" timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      });
+      const result = await Promise.race([this.onToolCall(name, args), timeoutPromise]);
+      return { result, durationMs: Math.round(performance.now() - start) };
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+    }
+  }
+
   disconnect() {
     this.manuallyDisconnecting = true;
     this.stopAudio();
@@ -319,6 +369,7 @@ export class LiveManager {
     this.outputAudioContext = null;
     this.isConnected = false;
     this.onStatusChange(false);
+    this.onActivity('idle');
   }
 
   private float32ToBase64PCM(data: Float32Array): string {

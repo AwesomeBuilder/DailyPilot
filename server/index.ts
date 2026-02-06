@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import { createServer } from 'http';
+import type { IncomingMessage } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { GoogleGenAI, Modality, StartSensitivity, EndSensitivity } from '@google/genai';
 import { google, calendar_v3, tasks_v1 } from 'googleapis';
@@ -21,6 +22,9 @@ process.env.GOOGLE_APPLICATION_CREDENTIALS = path.resolve(__dirname, '../service
 const PROJECT_ID = 'gen-lang-client-0616796979';
 const LOCATION_REGIONAL = 'us-central1';  // For Live API (doesn't support global)
 const LOCATION_GLOBAL = 'global';          // For Gemini 3 models (requires global)
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+const LIVE_MODEL_VERTEX = process.env.GEMINI_LIVE_MODEL_VERTEX || 'gemini-live-2.5-flash-native-audio';
+const LIVE_MODEL_PUBLIC = process.env.GEMINI_LIVE_MODEL_PUBLIC || 'gemini-2.5-flash-native-audio-preview-12-2025';
 
 // Initialize Vertex AI client for Live API (regional endpoint)
 const aiLive = new GoogleGenAI({
@@ -28,6 +32,9 @@ const aiLive = new GoogleGenAI({
   project: PROJECT_ID,
   location: LOCATION_REGIONAL,
 });
+const aiLivePublic = GEMINI_API_KEY
+  ? new GoogleGenAI({ apiKey: GEMINI_API_KEY })
+  : null;
 
 // Initialize Vertex AI client for Text Generation (global endpoint for Gemini 3)
 const aiText = new GoogleGenAI({
@@ -132,7 +139,15 @@ async function getAuthenticatedClient(req: express.Request): Promise<typeof oaut
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', project: PROJECT_ID, locationLive: LOCATION_REGIONAL, locationText: LOCATION_GLOBAL });
+  res.json({
+    status: 'ok',
+    project: PROJECT_ID,
+    locationLive: LOCATION_REGIONAL,
+    locationText: LOCATION_GLOBAL,
+    liveModelVertex: LIVE_MODEL_VERTEX,
+    liveModelPublic: LIVE_MODEL_PUBLIC,
+    publicApiEnabled: Boolean(GEMINI_API_KEY),
+  });
 });
 
 // ==================== OAuth Endpoints ====================
@@ -626,13 +641,31 @@ const server = createServer(app);
 // WebSocket server for Live API
 const wss = new WebSocketServer({ server, path: '/api/live' });
 
-wss.on('connection', async (clientWs: WebSocket) => {
-  console.log('Client connected to Live API proxy');
+wss.on('connection', async (clientWs: WebSocket, req: IncomingMessage) => {
+  const host = req.headers.host || 'localhost';
+  const url = new URL(req.url || '', `http://${host}`);
+  const providerParam = url.searchParams.get('provider');
+  const provider: 'vertex' | 'public' = providerParam === 'public' ? 'public' : 'vertex';
+  const liveModel = provider === 'public' ? LIVE_MODEL_PUBLIC : LIVE_MODEL_VERTEX;
+  const liveClient = provider === 'public' ? aiLivePublic : aiLive;
+
+  console.log(`Client connected to Live API proxy (provider=${provider}, model=${liveModel})`);
+
+  if (provider === 'public' && !liveClient) {
+    const errorMessage = 'Public Gemini API is not configured (missing GEMINI_API_KEY).';
+    console.error(errorMessage);
+    if (clientWs.readyState === WebSocket.OPEN) {
+      clientWs.send(JSON.stringify({ type: 'error', error: errorMessage }));
+    }
+    clientWs.close();
+    return;
+  }
 
   let geminiSession: any = null;
 
   // === LOOP PREVENTION STATE ===
   const DEDUP_WINDOW_MS = 10000; // 10 second dedup window (increased)
+  const MAX_PENDING_TOOL_MS = 30000; // 30s max wait for tool responses
 
   // Track pending tool calls by args hash to deduplicate Gemini's duplicate requests
   const pendingToolCalls = new Map<string, {
@@ -675,6 +708,9 @@ wss.on('connection', async (clientWs: WebSocket) => {
   let skipCurrentAudio = false; // Flag to skip audio for duplicate responses
   let lastCompletedTranscription = '';
   let lastTurnCompleteTime = 0;
+  let lastActivityState: 'idle' | 'listening' | 'thinking' | 'speaking' = 'idle';
+  let currentInputTranscript = '';
+  let lastFinalInputTranscript = '';
 
   // Aggressive audio cooldown - skip ALL audio for X ms after a completed response
   const AUDIO_COOLDOWN_MS = 1500; // 1.5 second cooldown after each response
@@ -682,6 +718,15 @@ wss.on('connection', async (clientWs: WebSocket) => {
 
   // Generate unique IDs for tool calls with undefined IDs (internal tracking only)
   let toolIdCounter = 0;
+  let missingToolIdCount = 0;
+
+  function emitActivity(state: 'idle' | 'listening' | 'thinking' | 'speaking') {
+    if (state === lastActivityState) return;
+    lastActivityState = state;
+    if (clientWs.readyState === WebSocket.OPEN) {
+      clientWs.send(JSON.stringify({ type: 'activity', state }));
+    }
+  }
 
   // Create a stable hash for tool args (handles property order and case differences)
   function stableArgsHash(name: string, args: any): string {
@@ -728,8 +773,8 @@ wss.on('connection', async (clientWs: WebSocket) => {
 
   try {
     // Connect to Gemini Live API via Vertex AI
-    geminiSession = await aiLive.live.connect({
-      model: 'gemini-live-2.5-flash-native-audio',
+    geminiSession = await liveClient!.live.connect({
+      model: liveModel,
       config: {
         responseModalities: [Modality.AUDIO],
         // Temperature 1.0 is CRITICAL - values below cause loops in Gemini 2.5
@@ -760,13 +805,40 @@ wss.on('connection', async (clientWs: WebSocket) => {
 
           // Clean up old pending entries
           for (const [key, entry] of pendingToolCalls) {
-            if (now - entry.timestamp > DEDUP_WINDOW_MS) {
+            if (entry.responded && now - entry.timestamp > DEDUP_WINDOW_MS) {
+              pendingToolCalls.delete(key);
+            }
+            if (!entry.responded && now - entry.timestamp > MAX_PENDING_TOOL_MS) {
+              console.warn(`[TOOL-TIMEOUT] No response for ${entry.name} after ${MAX_PENDING_TOOL_MS}ms (geminiId: ${entry.geminiId})`);
+              const timeoutResponse = {
+                functionResponses: [{
+                  id: entry.geminiId,
+                  name: entry.name,
+                  response: { error: `Tool "${entry.name}" timed out after ${MAX_PENDING_TOOL_MS}ms` }
+                }]
+              };
+              if (entry.geminiId !== undefined) {
+                geminiSession.sendToolResponse(timeoutResponse)
+                  .catch((e: any) => console.error('[TOOL-TIMEOUT] Failed sending timeout response:', e));
+              }
+              // Also respond to any duplicates still waiting
+              for (const dupGeminiId of entry.duplicateGeminiIds) {
+                if (dupGeminiId === undefined) continue;
+                geminiSession.sendToolResponse({
+                  functionResponses: [{
+                    id: dupGeminiId,
+                    name: entry.name,
+                    response: { error: `Tool "${entry.name}" timed out after ${MAX_PENDING_TOOL_MS}ms` }
+                  }]
+                }).catch((e: any) => console.error('[TOOL-TIMEOUT] Failed sending timeout response to duplicate:', e));
+              }
               pendingToolCalls.delete(key);
             }
           }
 
           // Handle tool calls from Gemini - DEDUPLICATE before forwarding
           if (message.toolCall) {
+            emitActivity('thinking');
             const calls = message.toolCall.functionCalls || [];
             // Debug: log full structure to understand ID field
             console.log(`[GEMINI→] Raw toolCall:`, JSON.stringify(message.toolCall, null, 2));
@@ -783,15 +855,6 @@ wss.on('connection', async (clientWs: WebSocket) => {
             const uniqueCalls: any[] = [];
 
             for (const fc of calls) {
-              // Preserve original Gemini ID (may be undefined)
-              const geminiId = fc.id;
-              // Generate internal tracking ID
-              const internalId = `server-${++toolIdCounter}-${now}`;
-
-              // Create stable dedup key (handles property order and case differences)
-              const dedupKey = stableArgsHash(fc.name, fc.args || {});
-              console.log(`[DEBUG] Checking dedupKey: ${dedupKey.substring(0, 100)}...`);
-
               // SPECIAL HANDLING: log_thought is handled server-side only (no client roundtrip)
               // This prevents multiple response cycles from log_thought calls
               if (fc.name === 'log_thought') {
@@ -810,13 +873,42 @@ wss.on('connection', async (clientWs: WebSocket) => {
                 // Immediately respond to Gemini (no client roundtrip needed)
                 geminiSession.sendToolResponse({
                   functionResponses: [{
-                    id: geminiId,
+                    id: fc.id,
                     name: fc.name,
                     response: { result: { success: true } }
                   }]
                 });
                 continue;
               }
+
+              if (fc.id === undefined || fc.id === null) {
+                missingToolIdCount += 1;
+                console.error(`[TOOL-ID] Missing tool call id for ${fc.name}. Count=${missingToolIdCount} (provider=${provider})`);
+                if (clientWs.readyState === WebSocket.OPEN) {
+                  const fallbackText = (lastFinalInputTranscript || currentInputTranscript).trim();
+                  clientWs.send(JSON.stringify({
+                    type: 'error',
+                    error: `Gemini tool call missing id for ${fc.name} (provider=${provider}). Resetting session to prevent loop. Please try again or switch providers.`
+                  }));
+                  if (fallbackText) {
+                    clientWs.send(JSON.stringify({
+                      type: 'fallback_text',
+                      text: fallbackText
+                    }));
+                    lastFinalInputTranscript = '';
+                    currentInputTranscript = '';
+                  }
+                }
+                return;
+              }
+              // Preserve original Gemini ID (may be undefined)
+              const geminiId = fc.id;
+              // Generate internal tracking ID
+              const internalId = `server-${++toolIdCounter}-${now}`;
+
+              // Create stable dedup key (handles property order and case differences)
+              const dedupKey = stableArgsHash(fc.name, fc.args || {});
+              console.log(`[DEBUG] Checking dedupKey: ${dedupKey.substring(0, 100)}...`);
 
               // Check for exact duplicate (same args)
               const existingEntry = pendingToolCalls.get(dedupKey);
@@ -891,6 +983,7 @@ wss.on('connection', async (clientWs: WebSocket) => {
 
           // Log when model generates audio
           if (message.serverContent?.modelTurn?.parts?.some((p: any) => p.inlineData)) {
+            emitActivity('speaking');
             // Check audio cooldown first (aggressive duplicate prevention)
             if (now < audioCooldownUntil) {
               if (!skipCurrentAudio) {
@@ -935,7 +1028,15 @@ wss.on('connection', async (clientWs: WebSocket) => {
 
           // Log input transcription (helps debug what model heard from user)
           if (message.serverContent?.inputTranscription?.text) {
-            console.log('[GEMINI→] Input transcription (user said):', message.serverContent.inputTranscription.text);
+            const inputText = message.serverContent.inputTranscription.text as string;
+            console.log('[GEMINI→] Input transcription (user said):', inputText);
+            emitActivity('listening');
+            currentInputTranscript += inputText;
+            if (message.serverContent.inputTranscription.finished) {
+              lastFinalInputTranscript = currentInputTranscript.trim();
+              currentInputTranscript = '';
+              console.log('[TRANSCRIPT] Final input transcript cached');
+            }
             // Reset ALL audio tracking on new user input - they asked something new
             currentTranscription = '';
             lastCompletedTranscription = '';
@@ -946,6 +1047,7 @@ wss.on('connection', async (clientWs: WebSocket) => {
           // Log turn completion signals and check for duplicate responses
           if (message.serverContent?.turnComplete) {
             console.log('[GEMINI→] Turn complete' + (skipCurrentAudio ? ' (audio was skipped - duplicate)' : ''));
+            emitActivity('idle');
 
             if (skipCurrentAudio) {
               // This turn was a duplicate, reset and skip forwarding
@@ -963,6 +1065,12 @@ wss.on('connection', async (clientWs: WebSocket) => {
               console.log(`[AUDIO-COOLDOWN] Set cooldown for ${AUDIO_COOLDOWN_MS}ms`);
             }
             currentTranscription = '';
+
+            if (currentInputTranscript.trim().length > 0 && !lastFinalInputTranscript) {
+              lastFinalInputTranscript = currentInputTranscript.trim();
+              currentInputTranscript = '';
+              console.log('[TRANSCRIPT] Cached input transcript on turnComplete');
+            }
           }
 
           // Log if generation was interrupted
@@ -985,6 +1093,7 @@ wss.on('connection', async (clientWs: WebSocket) => {
         },
         onclose: (event: any) => {
           console.log('Gemini session closed', event);
+          emitActivity('idle');
           if (clientWs.readyState === WebSocket.OPEN) {
             clientWs.send(JSON.stringify({ type: 'closed' }));
             clientWs.close();
@@ -992,6 +1101,7 @@ wss.on('connection', async (clientWs: WebSocket) => {
         },
         onerror: (error: any) => {
           console.error('Gemini session error:', error);
+          emitActivity('idle');
           if (clientWs.readyState === WebSocket.OPEN) {
             clientWs.send(JSON.stringify({ type: 'error', error: error.message }));
           }
@@ -1001,6 +1111,7 @@ wss.on('connection', async (clientWs: WebSocket) => {
 
   } catch (error: any) {
     console.error('Failed to connect to Gemini Live:', error);
+    emitActivity('idle');
     clientWs.send(JSON.stringify({ type: 'error', error: error.message }));
     clientWs.close();
     return;

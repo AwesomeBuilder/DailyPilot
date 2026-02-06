@@ -19,6 +19,11 @@ const API_BASE = 'http://localhost:3001';
 function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  const [liveActivity, setLiveActivity] = useState<'idle' | 'listening' | 'thinking' | 'speaking'>('idle');
+  const [liveProvider, setLiveProvider] = useState<'vertex' | 'public'>('vertex');
+  const [heardRecently, setHeardRecently] = useState(false);
+  const [isFallbackSpeaking, setIsFallbackSpeaking] = useState(false);
+  const handleTextSubmitRef = useRef<(text: string) => Promise<string | null>>(async () => null);
   const [volume, setVolume] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [isProcessingText, setIsProcessingText] = useState(false);
@@ -931,6 +936,18 @@ function App() {
                     content: thought,
                     type: 'reasoning' as const
                 }]);
+            },
+            (state) => setLiveActivity(state),
+            async (text) => {
+              setError('Live tools failed. Retrying via text...');
+              liveManager.current?.stopAudio();
+              setIsRecording(false);
+              setLiveActivity('idle');
+              console.log('[FALLBACK] Retrying via text with cached transcript:', text);
+              const responseText = await handleTextSubmitRef.current(text);
+              if (responseText && inputMode === 'voice') {
+                speakText(responseText);
+              }
             }
         );
     } catch (e: any) {
@@ -941,6 +958,13 @@ function App() {
         liveManager.current?.disconnect();
     };
   }, [handleToolCall]);
+
+  useEffect(() => {
+    if (liveActivity !== 'thinking') return;
+    setHeardRecently(true);
+    const timer = setTimeout(() => setHeardRecently(false), 4000);
+    return () => clearTimeout(timer);
+  }, [liveActivity]);
 
   const toggleRecording = async () => {
     if (!liveManager.current) return;
@@ -959,7 +983,19 @@ function App() {
     }
   };
 
-  const handleTextSubmit = async (text: string) => {
+  const handleProviderChange = async (provider: 'vertex' | 'public') => {
+    if (provider === liveProvider) return;
+    setLiveProvider(provider);
+    if (!liveManager.current) return;
+    liveManager.current.setProvider(provider);
+    if (isConnected && inputMode === 'voice') {
+      liveManager.current.disconnect();
+      await liveManager.current.connect();
+      setIsRecording(true);
+    }
+  };
+
+  const handleTextSubmit = async (text: string): Promise<string | null> => {
     setIsProcessingText(true);
     setError(null);
 
@@ -1012,6 +1048,7 @@ function App() {
                 content: textPart.text,
                 type: 'reasoning'
             }]);
+            return textPart.text as string;
         }
 
         if (response.candidates?.[0]?.groundingMetadata?.groundingChunks) {
@@ -1033,10 +1070,26 @@ function App() {
     } catch (e: any) {
         console.error(e);
         setError("Processing failed: " + e.message);
+        return null;
     } finally {
         setIsProcessingText(false);
     }
+    return null;
   };
+
+  useEffect(() => {
+    handleTextSubmitRef.current = handleTextSubmit;
+  }, [handleTextSubmit]);
+
+  const speakText = useCallback((text: string) => {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.onstart = () => setIsFallbackSpeaking(true);
+    utterance.onend = () => setIsFallbackSpeaking(false);
+    utterance.onerror = () => setIsFallbackSpeaking(false);
+    window.speechSynthesis.speak(utterance);
+  }, []);
 
   // Calculate unseen counts for badges
   const getUnseenCount = (viewType: ViewType) => {
@@ -1207,7 +1260,7 @@ function App() {
                 <div className="relative w-full max-w-md md:max-w-lg aspect-square md:aspect-[4/3]">
                   {/* Wave Background */}
                   <div className="absolute inset-0 rounded-3xl overflow-hidden shadow-xl bg-gradient-to-b from-white to-teal-50">
-                    <FabricWave3D isActive={isRecording || isProcessingText} />
+                    <FabricWave3D isActive={isRecording || isProcessingText || liveActivity !== 'idle'} />
                   </div>
 
                   {/* Mode Toggle - top right of wave container */}
@@ -1225,6 +1278,24 @@ function App() {
                       title="Text Mode"
                     >
                       <Keyboard size={16} />
+                    </button>
+                  </div>
+
+                  {/* Provider Toggle - top left of wave container */}
+                  <div className="absolute top-4 left-4 z-20 flex gap-1 bg-white/80 backdrop-blur-sm rounded-lg p-1 shadow-md">
+                    <button
+                      onClick={() => handleProviderChange('vertex')}
+                      className={`px-3 py-1 text-xs rounded-md transition-all ${liveProvider === 'vertex' ? 'bg-teal-primary text-white' : 'text-gray-500 hover:text-teal-dark'}`}
+                      title="Vertex API"
+                    >
+                      Vertex
+                    </button>
+                    <button
+                      onClick={() => handleProviderChange('public')}
+                      className={`px-3 py-1 text-xs rounded-md transition-all ${liveProvider === 'public' ? 'bg-teal-primary text-white' : 'text-gray-500 hover:text-teal-dark'}`}
+                      title="Public API"
+                    >
+                      Public
                     </button>
                   </div>
 
@@ -1277,8 +1348,24 @@ function App() {
 
                 {/* Status Text */}
                 <div className={`text-center ${inputMode === 'text' ? 'mt-16' : 'mt-14'}`}>
-                  <p className={`text-sm ${isRecording || isProcessingText ? 'text-teal-primary font-medium' : 'text-gray-400'}`}>
-                    {isProcessingText ? 'Processing...' : isRecording ? 'Listening...' : inputMode === 'voice' ? (isConnected ? 'Tap to speak' : 'Tap microphone to start') : 'Type and press enter'}
+                  <p className={`text-sm ${isRecording || isProcessingText || liveActivity !== 'idle' || isFallbackSpeaking ? 'text-teal-primary font-medium' : 'text-gray-400'}`}>
+                    {isProcessingText
+                      ? 'Processing...'
+                      : inputMode === 'voice'
+                        ? (!isConnected
+                          ? 'Tap microphone to start'
+                          : isFallbackSpeaking
+                            ? 'Speaking...'
+                          : liveActivity === 'thinking'
+                            ? (heardRecently ? 'Got it — thinking...' : 'Thinking...')
+                            : liveActivity === 'speaking'
+                              ? 'Speaking...'
+                              : liveActivity === 'listening'
+                                ? 'Listening...'
+                                : isRecording
+                                  ? 'Listening...'
+                                  : 'Tap to speak')
+                        : 'Type and press enter'}
                   </p>
                 </div>
 
