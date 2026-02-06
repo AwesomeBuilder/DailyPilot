@@ -10,7 +10,7 @@ import { MessageDraftList } from './components/MessageDraftList';
 import { FabricWave3D } from './components/FabricWave3D';
 import { GoogleSignIn } from './components/GoogleSignIn';
 import { useAuth } from './hooks/useAuth';
-import { AlertCircle, X, Menu, Mic, CheckSquare, Calendar, BrainCircuit, MessageSquare, Lightbulb, Keyboard, Send, Loader2, ArrowRight, Sparkles } from 'lucide-react';
+import { AlertCircle, X, Mic, CheckSquare, Calendar, BrainCircuit, MessageSquare, Lightbulb, Keyboard, Send, Loader2, ArrowRight, Sparkles } from 'lucide-react';
 
 type ViewType = 'home' | 'tasks' | 'calendar' | 'notes' | 'drafts' | 'suggestions';
 
@@ -26,7 +26,6 @@ function App() {
   const [activeView, setActiveView] = useState<ViewType>('home');
   const [displayedView, setDisplayedView] = useState<ViewType>('home');
   const [isPanelExiting, setIsPanelExiting] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
   const [inputMode, setInputMode] = useState<'voice' | 'text'>('voice');
   const [textInput, setTextInput] = useState('');
   const [signInBannerDismissed, setSignInBannerDismissed] = useState(() => {
@@ -1060,6 +1059,33 @@ function App() {
     { id: 'suggestions' as ViewType, icon: Lightbulb, label: 'Ideas', count: getUnseenCount('suggestions') },
   ];
 
+  // Smoothly scroll to marketing sections so judges see context fast
+  const scrollToSection = (id: string) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    // Account for header + spacing; ensure fully visible
+    const headerOffset = 140;
+    const y = el.getBoundingClientRect().top + window.scrollY - headerOffset;
+    window.scrollTo({ top: y < 0 ? 0 : y, behavior: 'smooth' });
+  };
+
+  const anchorLinks = [
+    { id: 'live-demo', label: 'Live Demo' },
+    { id: 'how-it-works', label: 'How it works' },
+    { id: 'future', label: 'Future' },
+    { id: 'about', label: 'About' },
+    { id: 'credits', label: 'Credits' },
+  ];
+
+  // Keep scroll position stable when toggling panels (especially notes)
+  const handleViewSelect = (id: ViewType) => {
+    const y = window.scrollY;
+    setActiveView(prev => (prev === id ? 'home' : id));
+    requestAnimationFrame(() => {
+      window.scrollTo({ top: y, behavior: 'auto' });
+    });
+  };
+
   return (
     <div className="min-h-screen bg-cream text-teal-dark flex flex-col">
 
@@ -1089,13 +1115,27 @@ function App() {
       {/* Header */}
       <header className="flex items-center gap-4 px-4 py-4 md:px-8 md:py-6">
         <button
-          onClick={() => setMenuOpen(!menuOpen)}
-          className="p-2 hover:bg-teal-dark/10 rounded-lg transition-colors"
+          onClick={() => setActiveView('home')}
+          className="group flex items-center gap-3 px-2 py-1 rounded-lg hover:bg-teal-dark/10 transition-colors"
+          aria-label="Go to Voice Home"
         >
-          <Menu size={24} strokeWidth={2} />
+          <img
+            src="/logo.png"
+            alt="Daily Pilot"
+            className="h-12 md:h-16 w-auto drop-shadow-md"
+          />
+          <div className="flex flex-col">
+            <div className="flex items-baseline gap-2">
+              <h1 className="text-3xl md:text-4xl font-black tracking-tight">Daily Pilot</h1>
+              <span className="hidden sm:inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-teal-primary group-hover:text-teal-dark">
+                <Mic size={14} /> Voice
+              </span>
+            </div>
+            <p className="text-xs md:text-sm text-gray-500 leading-snug">
+              Voice-first control for tasks, calendar, and notes — the live demo is front and center.
+            </p>
+          </div>
         </button>
-        <img src="/logo.png" alt="Daily Pilot" className="h-10 md:h-12 w-auto" />
-        <h1 className="text-3xl md:text-4xl font-black tracking-tight">Daily Pilot</h1>
         <div className="ml-auto">
           <GoogleSignIn
             isAuthenticated={isAuthenticated}
@@ -1110,9 +1150,9 @@ function App() {
 
       {/* Sign-in Banner for unauthenticated users */}
       {!isAuthenticated && !authLoading && !signInBannerDismissed && (
-        <div className="mx-4 md:mx-8 mb-4 bg-gradient-to-r from-indigo-50 to-teal-50 border border-indigo-200 rounded-xl p-4 flex items-center gap-4 fade-in">
-          <div className="flex-shrink-0 w-10 h-10 bg-indigo-100 rounded-full flex items-center justify-center">
-            <Calendar size={20} className="text-indigo-600" />
+        <div className="mx-4 md:mx-8 mb-4 bg-gradient-to-r from-teal-50 via-white to-coral-soft border border-teal-100 rounded-xl p-4 flex items-center gap-4 fade-in">
+          <div className="flex-shrink-0 w-10 h-10 bg-teal-100 rounded-full flex items-center justify-center">
+            <Calendar size={20} className="text-teal-primary" />
           </div>
           <div className="flex-1 min-w-0">
             <p className="font-medium text-gray-800 text-sm md:text-base">
@@ -1124,7 +1164,7 @@ function App() {
           </div>
           <button
             onClick={login}
-            className="flex-shrink-0 flex items-center gap-2 bg-indigo-500 hover:bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+            className="flex-shrink-0 flex items-center gap-2 bg-teal-primary hover:bg-teal-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors shadow-sm"
           >
             Connect <ArrowRight size={16} />
           </button>
@@ -1141,171 +1181,269 @@ function App() {
         </div>
       )}
 
-      {/* Menu Dropdown */}
-      {menuOpen && (
-        <div className="absolute top-16 left-4 z-40 bg-white rounded-xl shadow-xl border border-gray-200 py-2 min-w-[200px] fade-in">
-          <button
-            onClick={() => { setActiveView('home'); setMenuOpen(false); }}
-            className="w-full px-4 py-3 text-left hover:bg-gray-50 flex items-center gap-3"
-          >
-            <Mic size={18} /> Voice Home
-          </button>
-          {navItems.map(item => (
+      {/* Sticky anchor nav - streamlined links */}
+      <nav className="sticky top-0 z-30 bg-cream/95 backdrop-blur border-t border-b border-teal-dark/5">
+        <div className="max-w-6xl mx-auto px-4 md:px-8 py-2 flex gap-4 overflow-x-auto scrollbar-hide text-sm md:text-base font-semibold text-teal-dark">
+          {anchorLinks.map(link => (
             <button
-              key={item.id}
-              onClick={() => { setActiveView(item.id); setMenuOpen(false); }}
-              className="w-full px-4 py-3 text-left hover:bg-gray-50 flex items-center gap-3"
+              key={link.id}
+              onClick={() => scrollToSection(link.id)}
+              className="pb-1 border-b-2 border-transparent hover:border-teal-primary transition-colors whitespace-nowrap"
             >
-              <item.icon size={18} /> {item.label}
-              {item.count > 0 && (
-                <span className="ml-auto text-xs bg-teal-100 text-teal-700 px-2 py-0.5 rounded-full">
-                  {item.count}
-                </span>
-              )}
+              {link.label}
             </button>
           ))}
         </div>
-      )}
+      </nav>
 
-      {/* Main Content Area */}
-      <main className="flex-1 flex items-center justify-center px-4 pb-24 md:pb-28 overflow-hidden">
-        <div className="relative flex items-center justify-center w-full max-w-6xl">
+      {/* Main Content Area with sections for judges */}
+      <main className="flex-1 px-4 pb-28 md:pb-32 overflow-visible">
+        {/* Live Demo Hero - focused on cards only */}
+        <section id="live-demo" className="pt-6 md:pt-10">
+          <div className="relative w-full max-w-6xl mx-auto flex justify-center">
+            {/* Voice Control Panel - Always Visible */}
+            <div className={`voice-panel flex flex-col items-center w-full max-w-lg flex-shrink-0 z-20 ${isPanelExiting ? 'delayed-return' : ''} ${activeView !== 'home' ? 'md:-translate-x-[55%]' : 'translate-x-0'}`}>
+                {/* Wave Container with Mic/Input */}
+                <div className="relative w-full max-w-md md:max-w-lg aspect-square md:aspect-[4/3]">
+                  {/* Wave Background */}
+                  <div className="absolute inset-0 rounded-3xl overflow-hidden shadow-xl bg-gradient-to-b from-white to-teal-50">
+                    <FabricWave3D isActive={isRecording || isProcessingText} />
+                  </div>
 
-          {/* Voice Control Panel - Always Visible */}
-          <div className={`voice-panel flex flex-col items-center w-full max-w-lg flex-shrink-0 z-20 ${isPanelExiting ? 'delayed-return' : ''} ${activeView !== 'home' ? 'md:-translate-x-[55%]' : 'translate-x-0'}`}>
-            {/* Wave Container with Mic/Input */}
-            <div className="relative w-full max-w-md md:max-w-lg aspect-square md:aspect-[4/3]">
-              {/* Wave Background */}
-              <div className="absolute inset-0 rounded-3xl overflow-hidden shadow-xl bg-gradient-to-b from-white to-teal-50">
-                <FabricWave3D isActive={isRecording || isProcessingText} />
-              </div>
-
-              {/* Mode Toggle - top right of wave container */}
-              <div className="absolute top-4 right-4 z-20 flex gap-1 bg-white/80 backdrop-blur-sm rounded-lg p-1 shadow-md">
-                <button
-                  onClick={() => setInputMode('voice')}
-                  className={`p-2 rounded-md transition-all ${inputMode === 'voice' ? 'bg-teal-primary text-white' : 'text-gray-500 hover:text-teal-dark'}`}
-                  title="Voice Mode"
-                >
-                  <Mic size={16} />
-                </button>
-                <button
-                  onClick={() => setInputMode('text')}
-                  className={`p-2 rounded-md transition-all ${inputMode === 'text' ? 'bg-teal-primary text-white' : 'text-gray-500 hover:text-teal-dark'}`}
-                  title="Text Mode"
-                >
-                  <Keyboard size={16} />
-                </button>
-              </div>
-
-              {/* Mic Button - Voice Mode */}
-              {inputMode === 'voice' && (
-                <button
-                  onClick={toggleRecording}
-                  className={`mic-button absolute left-1/2 -translate-x-1/2 -bottom-8 z-20 w-20 h-20 md:w-24 md:h-24 rounded-full bg-cream border-4 border-gray-200 flex items-center justify-center shadow-lg hover:shadow-xl transition-all ${isRecording ? 'active border-teal-primary' : ''}`}
-                >
-                  <Mic
-                    size={32}
-                    strokeWidth={1.5}
-                    className={`${isRecording ? 'text-teal-primary' : 'text-teal-dark'}`}
-                  />
-                </button>
-              )}
-
-              {/* Text Input - Text Mode */}
-              {inputMode === 'text' && (
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    if (textInput.trim() && !isProcessingText) {
-                      handleTextSubmit(textInput);
-                      setTextInput('');
-                    }
-                  }}
-                  className="absolute left-1/2 -translate-x-1/2 -bottom-6 z-20 w-[90%] max-w-sm"
-                >
-                  <div className="relative">
-                    <input
-                      type="text"
-                      value={textInput}
-                      onChange={(e) => setTextInput(e.target.value)}
-                      placeholder="Type your request..."
-                      className="w-full bg-white border-2 border-gray-200 text-teal-dark rounded-full py-3 pl-4 pr-12 shadow-lg focus:outline-none focus:border-teal-primary placeholder:text-gray-400"
-                      disabled={isProcessingText}
-                    />
+                  {/* Mode Toggle - top right of wave container */}
+                  <div className="absolute top-4 right-4 z-20 flex gap-1 bg-white/80 backdrop-blur-sm rounded-lg p-1 shadow-md">
                     <button
-                      type="submit"
-                      disabled={!textInput.trim() || isProcessingText}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 p-2 bg-teal-primary text-white rounded-full hover:bg-teal-600 disabled:opacity-50 disabled:hover:bg-teal-primary transition-colors"
+                      onClick={() => setInputMode('voice')}
+                      className={`p-2 rounded-md transition-all ${inputMode === 'voice' ? 'bg-teal-primary text-white' : 'text-gray-500 hover:text-teal-dark'}`}
+                      title="Voice Mode"
                     >
-                      {isProcessingText ? <Loader2 size={18} className="animate-spin"/> : <Send size={18} />}
+                      <Mic size={16} />
+                    </button>
+                    <button
+                      onClick={() => setInputMode('text')}
+                      className={`p-2 rounded-md transition-all ${inputMode === 'text' ? 'bg-teal-primary text-white' : 'text-gray-500 hover:text-teal-dark'}`}
+                      title="Text Mode"
+                    >
+                      <Keyboard size={16} />
                     </button>
                   </div>
-                </form>
-              )}
-            </div>
 
-            {/* Status Text */}
-            <div className={`text-center ${inputMode === 'text' ? 'mt-16' : 'mt-14'}`}>
-              <p className={`text-sm ${isRecording || isProcessingText ? 'text-teal-primary font-medium' : 'text-gray-400'}`}>
-                {isProcessingText ? 'Processing...' : isRecording ? 'Listening...' : inputMode === 'voice' ? (isConnected ? 'Tap to speak' : 'Tap microphone to start') : 'Type and press enter'}
-              </p>
-            </div>
-
-            {/* Example prompts for authenticated users */}
-            {isAuthenticated && !isRecording && !isProcessingText && logs.length === 0 && (
-              <div className="mt-6 text-center fade-in">
-                <p className="text-xs text-gray-400 mb-3 flex items-center justify-center gap-1.5">
-                  <Sparkles size={12} />
-                  Try saying or typing
-                </p>
-                <div className="flex flex-wrap justify-center gap-2 max-w-md mx-auto">
-                  {[
-                    "What's on my schedule today?",
-                    "Add a task to call mom",
-                    "Schedule lunch with Sarah tomorrow",
-                    "Do I have any conflicts this week?",
-                  ].map((prompt, idx) => (
+                  {/* Mic Button - Voice Mode */}
+                  {inputMode === 'voice' && (
                     <button
-                      key={idx}
-                      onClick={() => {
-                        if (inputMode === 'text') {
-                          setTextInput(prompt);
-                        } else {
-                          setInputMode('text');
-                          setTextInput(prompt);
+                      onClick={toggleRecording}
+                      className={`mic-button absolute left-1/2 -translate-x-1/2 -bottom-8 z-20 w-20 h-20 md:w-24 md:h-24 rounded-full bg-cream border-4 border-gray-200 flex items-center justify-center shadow-lg hover:shadow-xl transition-all ${isRecording ? 'active border-teal-primary' : ''}`}
+                    >
+                      <Mic
+                        size={32}
+                        strokeWidth={1.5}
+                        className={`${isRecording ? 'text-teal-primary' : 'text-teal-dark'}`}
+                      />
+                    </button>
+                  )}
+
+                  {/* Text Input - Text Mode */}
+                  {inputMode === 'text' && (
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        if (textInput.trim() && !isProcessingText) {
+                          handleTextSubmit(textInput);
+                          setTextInput('');
                         }
                       }}
-                      className="text-xs bg-white/80 hover:bg-white border border-gray-200 hover:border-teal-300 text-gray-600 hover:text-teal-700 px-3 py-1.5 rounded-full transition-all shadow-sm hover:shadow"
+                      className="absolute left-1/2 -translate-x-1/2 -bottom-6 z-20 w-[90%] max-w-sm"
                     >
-                      "{prompt}"
-                    </button>
-                  ))}
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={textInput}
+                          onChange={(e) => setTextInput(e.target.value)}
+                          placeholder="Type your request..."
+                          className="w-full bg-white border-2 border-gray-200 text-teal-dark rounded-full py-3 pl-4 pr-12 shadow-lg focus:outline-none focus:border-teal-primary placeholder:text-gray-400"
+                          disabled={isProcessingText}
+                        />
+                        <button
+                          type="submit"
+                          disabled={!textInput.trim() || isProcessingText}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 p-2 bg-teal-primary text-white rounded-full hover:bg-teal-600 disabled:opacity-50 disabled:hover:bg-teal-primary transition-colors"
+                        >
+                          {isProcessingText ? <Loader2 size={18} className="animate-spin"/> : <Send size={18} />}
+                        </button>
+                      </div>
+                    </form>
+                  )}
                 </div>
+
+                {/* Status Text */}
+                <div className={`text-center ${inputMode === 'text' ? 'mt-16' : 'mt-14'}`}>
+                  <p className={`text-sm ${isRecording || isProcessingText ? 'text-teal-primary font-medium' : 'text-gray-400'}`}>
+                    {isProcessingText ? 'Processing...' : isRecording ? 'Listening...' : inputMode === 'voice' ? (isConnected ? 'Tap to speak' : 'Tap microphone to start') : 'Type and press enter'}
+                  </p>
+                </div>
+
+                {/* Example prompts for authenticated users */}
+                {isAuthenticated && !isRecording && !isProcessingText && logs.length === 0 && (
+                  <div className="mt-6 text-center fade-in">
+                    <p className="text-xs text-gray-400 mb-3 flex items-center justify-center gap-1.5">
+                      <Sparkles size={12} />
+                      Try saying or typing
+                    </p>
+                    <div className="flex flex-wrap justify-center gap-2 max-w-md mx-auto">
+                      {[
+                        "What's on my schedule today?",
+                        "Add a task to call mom",
+                        "Schedule lunch with Sarah tomorrow",
+                        "Do I have any conflicts this week?",
+                      ].map((prompt, idx) => (
+                        <button
+                          key={idx}
+                          onClick={() => {
+                            if (inputMode === 'text') {
+                              setTextInput(prompt);
+                            } else {
+                              setInputMode('text');
+                              setTextInput(prompt);
+                            }
+                          }}
+                          className="text-xs bg-white/80 hover:bg-white border border-gray-200 hover:border-teal-300 text-gray-600 hover:text-teal-700 px-3 py-1.5 rounded-full transition-all shadow-sm hover:shadow"
+                        >
+                          "{prompt}"
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
 
-          {/* Content Panel - Slides in from right */}
-          {displayedView !== 'home' && (
-            <div key={displayedView} className={`content-panel absolute top-0 right-4 w-[48%] max-w-xl h-[50vh] md:h-[60vh] hidden md:block ${isPanelExiting ? 'slide-out-right z-0' : 'slide-in-right z-10'}`}>
-              {displayedView === 'tasks' && (
-                <TaskList
-                  tasks={tasks}
-                  onUpdateTask={handleUpdateTask}
-                  onDeleteTask={handleDeleteTask}
-                  onDeleteTasks={handleDeleteTasks}
-                  onDeleteAllTasks={handleDeleteAllTasks}
-                />
+              {/* Content Panel - Slides in from right (restored width) */}
+              {displayedView !== 'home' && (
+                <div
+                  key={displayedView}
+                  className={`content-panel absolute top-0 right-4 w-[48%] max-w-xl h-[50vh] md:h-[60vh] hidden md:block ${isPanelExiting ? 'slide-out-right z-0' : 'slide-in-right z-10'}`}
+                >
+                  {displayedView === 'tasks' && (
+                    <TaskList
+                      tasks={tasks}
+                      onUpdateTask={handleUpdateTask}
+                      onDeleteTask={handleDeleteTask}
+                      onDeleteTasks={handleDeleteTasks}
+                      onDeleteAllTasks={handleDeleteAllTasks}
+                    />
+                  )}
+                  {displayedView === 'calendar' && <CalendarView events={events} tasks={tasks} onUpdateEvent={handleUpdateEvent} onDeleteEvent={handleDeleteEvent} onAddEvent={handleAddEvent} />}
+                  {displayedView === 'notes' && <ReasoningLog logs={logs} />}
+                  {displayedView === 'drafts' && <MessageDraftList drafts={drafts} onUpdateDraft={handleUpdateDraft} onDeleteDraft={handleDeleteDraft} />}
+                  {displayedView === 'suggestions' && <SuggestionList suggestions={suggestions} />}
+                </div>
               )}
-              {displayedView === 'calendar' && <CalendarView events={events} tasks={tasks} onUpdateEvent={handleUpdateEvent} onDeleteEvent={handleDeleteEvent} onAddEvent={handleAddEvent} />}
-              {displayedView === 'notes' && <ReasoningLog logs={logs} />}
-              {displayedView === 'drafts' && <MessageDraftList drafts={drafts} onUpdateDraft={handleUpdateDraft} onDeleteDraft={handleDeleteDraft} />}
-              {displayedView === 'suggestions' && <SuggestionList suggestions={suggestions} />}
             </div>
-          )}
-        </div>
+        </section>
 
+        {/* How it works */}
+        <section id="how-it-works" className="max-w-6xl mx-auto mt-12 md:mt-16">
+          <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-6 md:p-8 space-y-6">
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div>
+                <p className="text-xs uppercase font-semibold text-teal-primary tracking-wide">How it works</p>
+                <h3 className="text-2xl md:text-3xl font-bold">3-step flow</h3>
+              </div>
+              <button
+                onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+                className="px-4 py-2 rounded-full bg-teal-50 text-teal-dark border border-teal-100 hover:bg-teal-100 transition-colors text-sm font-semibold"
+              >
+                Back to demo
+              </button>
+            </div>
+            <div className="grid md:grid-cols-3 gap-4">
+              {[
+                {
+                  title: '1) Capture',
+                  copy: 'Tap mic or type. Audio streams to LiveManager; text falls back to Gemini.',
+                  icon: Mic,
+                },
+                {
+                  title: '2) Orchestrate',
+                  copy: 'Tool calls manage Calendar, Tasks, Suggestions, and Drafts with visible reasoning.',
+                  icon: BrainCircuit,
+                },
+                {
+                  title: '3) Show receipts',
+                  copy: 'Reasoning log and panels update in real time so results stay transparent.',
+                  icon: CheckSquare,
+                },
+              ].map((item, idx) => (
+                <div key={idx} className="p-4 rounded-xl border border-gray-200 bg-sand shadow-sm flex flex-col gap-2">
+                  <div className="flex items-center gap-2 text-teal-primary font-semibold">
+                    <item.icon size={18} />
+                    <span>{item.title}</span>
+                  </div>
+                  <p className="text-sm text-gray-600 leading-relaxed">{item.copy}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* Future possibilities */}
+        <section id="future" className="max-w-6xl mx-auto mt-12 md:mt-16">
+          <div className="bg-gradient-to-r from-teal-900 via-teal-dark to-teal-primary text-white rounded-2xl p-6 md:p-8 shadow-md">
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div>
+                <p className="text-xs uppercase font-semibold tracking-wide text-teal-100">Future possibilities</p>
+                <h3 className="text-2xl md:text-3xl font-bold">Where we take this next</h3>
+              </div>
+              <button
+                onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+                className="px-4 py-2 rounded-full bg-white/10 border border-white/30 text-white hover:bg-white/15 transition-colors text-sm font-semibold"
+              >
+                Try now
+              </button>
+            </div>
+            <div className="grid md:grid-cols-3 gap-4 mt-4">
+              {[
+                'Cross-channel sync with Slack/Teams and email triage.',
+                'Multi-user “crew” mode to negotiate shared schedules.',
+                'Offline-first mobile with voice diarization.',
+              ].map((item, idx) => (
+                <div key={idx} className="bg-white/10 border border-white/20 rounded-xl p-4 text-sm leading-relaxed">
+                  {item}
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* About */}
+        <section id="about" className="max-w-6xl mx-auto mt-12 md:mt-16">
+          <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-6 md:p-8 space-y-3">
+            <p className="text-xs uppercase font-semibold text-teal-primary tracking-wide">About</p>
+            <h3 className="text-2xl font-bold">Purpose-built productivity copilot</h3>
+            <p className="text-gray-600 leading-relaxed">
+              Daily Pilot is a voice-first copilot that keeps tasks, calendar, and reasoning in one pane. The landing flow keeps the live demo up front while still giving space for context and roadmap below.
+            </p>
+          </div>
+        </section>
+
+        {/* Credits / Copyright */}
+        <section id="credits" className="max-w-6xl mx-auto mt-10 md:mt-12 mb-8">
+          <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-6 md:p-7 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase font-semibold text-teal-primary tracking-wide">Credits & Copyright</p>
+              <p className="text-gray-600 text-sm md:text-base">
+                © 2024–2026 Daily Pilot team. Uses Google Calendar/Tasks APIs and Gemini for reasoning. Assets: fabric-wave by team.
+              </p>
+            </div>
+            <div className="flex gap-3 flex-wrap">
+              <button
+                onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+                className="px-4 py-2 rounded-full bg-teal-primary text-white font-semibold shadow-sm hover:bg-teal-600 transition-colors"
+              >
+                Back to top
+              </button>
+            </div>
+          </div>
+        </section>
       </main>
 
       {/* Mobile Content Panel - Slides up from bottom on small screens */}
@@ -1342,7 +1480,7 @@ function App() {
           {navItems.map(item => (
             <button
               key={item.id}
-              onClick={() => setActiveView(activeView === item.id ? 'home' : item.id)}
+              onClick={() => handleViewSelect(item.id)}
               className={`relative p-3 md:p-4 rounded-xl transition-all ${
                 activeView === item.id
                   ? 'bg-teal-100 text-teal-primary'
@@ -1361,13 +1499,6 @@ function App() {
         </div>
       </nav>
 
-      {/* Click outside to close menu */}
-      {menuOpen && (
-        <div
-          className="fixed inset-0 z-30"
-          onClick={() => setMenuOpen(false)}
-        />
-      )}
     </div>
   );
 }

@@ -179,13 +179,13 @@ export const CalendarView: React.FC<Props> = ({ events, tasks = [], onUpdateEven
       <div className="p-4 border-b border-gray-200 bg-gray-50/80">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-sm font-semibold text-teal-dark uppercase tracking-wider flex items-center gap-2">
-            <CalendarIcon size={16} className="text-indigo-500"/>
+            <CalendarIcon size={16} className="text-teal-600"/>
             Schedule
           </h2>
           {onAddEvent && (
             <button
               onClick={() => setIsAdding(true)}
-              className="p-1.5 text-indigo-500 hover:bg-indigo-100 rounded-lg transition-colors"
+              className="p-1.5 text-teal-600 hover:bg-teal-100 rounded-lg transition-colors"
               title="Add Event"
             >
               <Plus size={18} />
@@ -236,13 +236,13 @@ export const CalendarView: React.FC<Props> = ({ events, tasks = [], onUpdateEven
                   onClick={() => setSelectedDate(date)}
                   className={`flex-shrink-0 px-2 py-1 text-xs rounded-lg transition-colors ${
                     isSelected
-                      ? 'bg-indigo-500 text-white'
+                      ? 'bg-teal-500 text-white'
                       : 'bg-gray-100 hover:bg-gray-200 text-gray-600'
                   }`}
                 >
                   {new Intl.DateTimeFormat('en-US', { weekday: 'short', day: 'numeric' }).format(date)}
                   {itemCount > 0 && (
-                    <span className={`ml-1 ${isSelected ? 'text-indigo-200' : 'text-gray-400'}`}>
+                    <span className={`ml-1 ${isSelected ? 'text-teal-100' : 'text-gray-400'}`}>
                       ({itemCount})
                     </span>
                   )}
@@ -256,13 +256,13 @@ export const CalendarView: React.FC<Props> = ({ events, tasks = [], onUpdateEven
       <div className="flex-1 overflow-y-auto p-4 space-y-3 scrollbar-hide">
         {/* Add Event Form */}
         {isAdding && (
-          <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-4 space-y-3">
-            <p className="text-sm font-medium text-indigo-900">New Event</p>
+          <div className="bg-teal-50 border border-teal-200 rounded-xl p-4 space-y-3">
+            <p className="text-sm font-medium text-teal-900">New Event</p>
             <input
               type="text"
               value={newEventForm.title || ''}
               onChange={(e) => setNewEventForm({ ...newEventForm, title: e.target.value })}
-              className="w-full px-3 py-2 text-sm border border-indigo-200 rounded-lg focus:outline-none focus:border-indigo-400 bg-white"
+              className="w-full px-3 py-2 text-sm border border-teal-200 rounded-lg focus:outline-none focus:border-teal-400 bg-white"
               placeholder="Event title"
             />
             <div className="flex gap-2">
@@ -270,12 +270,12 @@ export const CalendarView: React.FC<Props> = ({ events, tasks = [], onUpdateEven
                 type="datetime-local"
                 value={newEventForm.start?.slice(0, 16) || ''}
                 onChange={(e) => setNewEventForm({ ...newEventForm, start: e.target.value })}
-                className="flex-1 px-3 py-2 text-sm border border-indigo-200 rounded-lg focus:outline-none focus:border-indigo-400 bg-white"
+                className="flex-1 px-3 py-2 text-sm border border-teal-200 rounded-lg focus:outline-none focus:border-teal-400 bg-white"
               />
               <select
                 value={newEventForm.duration || '30 mins'}
                 onChange={(e) => setNewEventForm({ ...newEventForm, duration: e.target.value })}
-                className="w-28 px-3 py-2 text-sm border border-indigo-200 rounded-lg focus:outline-none focus:border-indigo-400 bg-white"
+                className="w-28 px-3 py-2 text-sm border border-teal-200 rounded-lg focus:outline-none focus:border-teal-400 bg-white"
               >
                 <option value="15 mins">15 mins</option>
                 <option value="30 mins">30 mins</option>
@@ -289,13 +289,13 @@ export const CalendarView: React.FC<Props> = ({ events, tasks = [], onUpdateEven
               type="text"
               value={newEventForm.location || ''}
               onChange={(e) => setNewEventForm({ ...newEventForm, location: e.target.value })}
-              className="w-full px-3 py-2 text-sm border border-indigo-200 rounded-lg focus:outline-none focus:border-indigo-400 bg-white"
+              className="w-full px-3 py-2 text-sm border border-teal-200 rounded-lg focus:outline-none focus:border-teal-400 bg-white"
               placeholder="Location (optional)"
             />
             <textarea
               value={newEventForm.description || ''}
               onChange={(e) => setNewEventForm({ ...newEventForm, description: e.target.value })}
-              className="w-full px-3 py-2 text-sm border border-indigo-200 rounded-lg focus:outline-none focus:border-indigo-400 bg-white resize-none"
+              className="w-full px-3 py-2 text-sm border border-teal-200 rounded-lg focus:outline-none focus:border-teal-400 bg-white resize-none"
               placeholder="Description (optional)"
               rows={2}
             />
@@ -306,7 +306,7 @@ export const CalendarView: React.FC<Props> = ({ events, tasks = [], onUpdateEven
               <button
                 onClick={handleAddEvent}
                 disabled={!newEventForm.title || !newEventForm.start}
-                className="px-4 py-1.5 text-sm bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors disabled:opacity-50"
+                className="px-4 py-1.5 text-sm bg-teal-500 text-white rounded-lg hover:bg-teal-700 transition-colors disabled:opacity-50"
               >
                 Add Event
               </button>
@@ -321,16 +321,16 @@ export const CalendarView: React.FC<Props> = ({ events, tasks = [], onUpdateEven
         )}
 
         {selectedDateItems.map((item) => (
-          <div key={item.id} className={`group relative pl-4 border-l-2 ${item.type === 'event' ? 'border-indigo-300' : 'border-emerald-300'}`}>
-            <div className={`absolute -left-[5px] top-0 h-2.5 w-2.5 rounded-full ring-4 ring-white ${item.type === 'event' ? 'bg-indigo-500' : 'bg-emerald-500'}`}></div>
+          <div key={item.id} className={`group relative pl-4 border-l-2 ${item.type === 'event' ? 'border-teal-200' : 'border-emerald-300'}`}>
+            <div className={`absolute -left-[5px] top-0 h-2.5 w-2.5 rounded-full ring-4 ring-white ${item.type === 'event' ? 'bg-teal-500' : 'bg-emerald-500'}`}></div>
 
             {editingId === item.id && item.type === 'event' ? (
-              <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-4 space-y-3">
+              <div className="bg-teal-50 border border-teal-200 rounded-xl p-4 space-y-3">
                 <input
                   type="text"
                   value={editForm.title || ''}
                   onChange={(e) => setEditForm({ ...editForm, title: e.target.value })}
-                  className="w-full px-3 py-2 text-sm border border-indigo-200 rounded-lg focus:outline-none focus:border-indigo-400 bg-white"
+                  className="w-full px-3 py-2 text-sm border border-teal-200 rounded-lg focus:outline-none focus:border-teal-400 bg-white"
                   placeholder="Event title"
                 />
                 <div className="flex gap-2">
@@ -338,12 +338,12 @@ export const CalendarView: React.FC<Props> = ({ events, tasks = [], onUpdateEven
                     type="datetime-local"
                     value={editForm.start?.slice(0, 16) || ''}
                     onChange={(e) => setEditForm({ ...editForm, start: e.target.value ? e.target.value + ':00' : '' })}
-                    className="flex-1 px-3 py-2 text-sm border border-indigo-200 rounded-lg focus:outline-none focus:border-indigo-400 bg-white"
+                    className="flex-1 px-3 py-2 text-sm border border-teal-200 rounded-lg focus:outline-none focus:border-teal-400 bg-white"
                   />
                   <select
                     value={editForm.duration || '30 mins'}
                     onChange={(e) => setEditForm({ ...editForm, duration: e.target.value })}
-                    className="w-28 px-3 py-2 text-sm border border-indigo-200 rounded-lg focus:outline-none focus:border-indigo-400 bg-white"
+                    className="w-28 px-3 py-2 text-sm border border-teal-200 rounded-lg focus:outline-none focus:border-teal-400 bg-white"
                   >
                     <option value="15 mins">15 mins</option>
                     <option value="30 mins">30 mins</option>
@@ -357,13 +357,13 @@ export const CalendarView: React.FC<Props> = ({ events, tasks = [], onUpdateEven
                   type="text"
                   value={editForm.location || ''}
                   onChange={(e) => setEditForm({ ...editForm, location: e.target.value })}
-                  className="w-full px-3 py-2 text-sm border border-indigo-200 rounded-lg focus:outline-none focus:border-indigo-400 bg-white"
+                  className="w-full px-3 py-2 text-sm border border-teal-200 rounded-lg focus:outline-none focus:border-teal-400 bg-white"
                   placeholder="Location (optional)"
                 />
                 <textarea
                   value={editForm.description || ''}
                   onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
-                  className="w-full px-3 py-2 text-sm border border-indigo-200 rounded-lg focus:outline-none focus:border-indigo-400 bg-white resize-none"
+                  className="w-full px-3 py-2 text-sm border border-teal-200 rounded-lg focus:outline-none focus:border-teal-400 bg-white resize-none"
                   placeholder="Description (optional)"
                   rows={2}
                 />
@@ -371,19 +371,19 @@ export const CalendarView: React.FC<Props> = ({ events, tasks = [], onUpdateEven
                   <button onClick={cancelEdit} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-200 rounded-lg transition-colors">
                     <X size={16} />
                   </button>
-                  <button onClick={saveEdit} className="px-3 py-1.5 text-sm bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors">
+                  <button onClick={saveEdit} className="px-3 py-1.5 text-sm bg-teal-500 text-white rounded-lg hover:bg-teal-700 transition-colors">
                     <Check size={16} />
                   </button>
                 </div>
               </div>
             ) : (
-              <div className={`p-3 rounded-xl border hover:shadow-md transition-shadow ${item.type === 'event' ? 'bg-indigo-50 border-indigo-100' : 'bg-emerald-50 border-emerald-100'}`}>
+              <div className={`p-3 rounded-xl border hover:shadow-md transition-shadow ${item.type === 'event' ? 'bg-teal-50 border-teal-100' : 'bg-emerald-50 border-emerald-100'}`}>
                 <div className="flex justify-between items-start">
                   <div>
-                    <span className={`text-xs font-medium ${item.type === 'event' ? 'text-indigo-500' : 'text-emerald-500'}`}>
+                    <span className={`text-xs font-medium ${item.type === 'event' ? 'text-teal-600' : 'text-emerald-500'}`}>
                       {formatTime(item.dateObj)}
                     </span>
-                    <h3 className={`text-sm font-medium mt-0.5 ${item.type === 'event' ? 'text-indigo-900' : 'text-emerald-900'}`}>
+                    <h3 className={`text-sm font-medium mt-0.5 ${item.type === 'event' ? 'text-teal-900' : 'text-emerald-900'}`}>
                       {item.title}
                     </h3>
                   </div>
@@ -393,14 +393,14 @@ export const CalendarView: React.FC<Props> = ({ events, tasks = [], onUpdateEven
                       <>
                         <button
                           onClick={() => startEdit(item.data as CalendarEvent)}
-                          className="opacity-0 group-hover:opacity-100 p-1 text-indigo-400 hover:text-indigo-600 transition-all"
+                          className="opacity-0 group-hover:opacity-100 p-1 text-teal-400 hover:text-teal-600 transition-all"
                         >
                           <Pencil size={14} />
                         </button>
                         {onDeleteEvent && (
                           <button
                             onClick={() => onDeleteEvent(item.id)}
-                            className="opacity-0 group-hover:opacity-100 p-1 text-indigo-400 hover:text-rose-500 transition-all"
+                            className="opacity-0 group-hover:opacity-100 p-1 text-teal-400 hover:text-rose-500 transition-all"
                           >
                             <Trash2 size={14} />
                           </button>
@@ -411,13 +411,13 @@ export const CalendarView: React.FC<Props> = ({ events, tasks = [], onUpdateEven
                 </div>
 
                 <div className="mt-2 space-y-1">
-                  <div className={`flex items-center gap-2 text-xs ${item.type === 'event' ? 'text-indigo-600' : 'text-emerald-600'}`}>
+                  <div className={`flex items-center gap-2 text-xs ${item.type === 'event' ? 'text-teal-600' : 'text-emerald-600'}`}>
                     <Clock size={12} />
                     <span>{item.meta}</span>
                   </div>
                   {item.subtitle && (
                     <div className="flex items-center gap-2 text-xs text-gray-600">
-                      {item.type === 'event' && <MapPin size={12} className="text-indigo-400"/>}
+                      {item.type === 'event' && <MapPin size={12} className="text-teal-400"/>}
                       <span>{item.subtitle}</span>
                     </div>
                   )}

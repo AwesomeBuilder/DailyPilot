@@ -105,10 +105,13 @@ const renderInline = (text: string): React.ReactNode => {
 };
 
 export const ReasoningLog: React.FC<Props> = ({ logs }) => {
-  const endRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const el = scrollRef.current;
+    if (el) {
+      el.scrollTop = el.scrollHeight;
+    }
   }, [logs]);
 
   return (
@@ -127,7 +130,7 @@ export const ReasoningLog: React.FC<Props> = ({ logs }) => {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-3 scrollbar-hide">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3 scrollbar-hide">
         {logs.length === 0 && (
           <div className="text-gray-400 text-center italic mt-10">
             Chain of thought...
@@ -154,7 +157,6 @@ export const ReasoningLog: React.FC<Props> = ({ logs }) => {
             <div className="leading-relaxed text-sm">{renderMarkdown(log.content)}</div>
           </div>
         ))}
-        <div ref={endRef} />
       </div>
     </div>
   );
