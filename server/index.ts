@@ -75,6 +75,13 @@ const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
 const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || 'http://localhost:3001/api/auth/callback';
 const SESSION_SECRET = process.env.SESSION_SECRET || 'change_this_to_a_random_32_char_string';
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
+const FRONTEND_ORIGIN = (() => {
+  try {
+    return new URL(FRONTEND_URL).origin;
+  } catch {
+    return FRONTEND_URL.replace(/\/+$/, '');
+  }
+})();
 const COOKIE_SECURE = process.env.COOKIE_SECURE === 'true';
 const COOKIE_SAMESITE = (process.env.COOKIE_SAMESITE || 'lax') as 'lax' | 'strict' | 'none';
 
@@ -130,9 +137,9 @@ app.use(session({
 
 // CORS for development - updated to allow credentials
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', FRONTEND_URL);
+  res.header('Access-Control-Allow-Origin', FRONTEND_ORIGIN);
   res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
