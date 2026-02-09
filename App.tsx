@@ -1510,7 +1510,7 @@ function App() {
           aria-label="Go to Voice Home"
         >
           <img
-            src="/logo.png"
+            src="./logo.png"
             alt="Daily Pilot"
             className="h-12 md:h-16 w-auto drop-shadow-md"
           />
