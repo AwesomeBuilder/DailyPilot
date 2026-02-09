@@ -1,0 +1,10 @@
+node_modules
+dist
+dist-server
+.git
+.gitignore
+.env
+.env.*
+.sessions
+service-account.json
+*.log

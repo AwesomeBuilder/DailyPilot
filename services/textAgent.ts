@@ -10,9 +10,9 @@ export async function processTextPrompt(
 ) {
   // Build the API URL for the backend
   const providerParam = provider === 'public' ? 'public' : 'vertex';
-  const apiUrl = import.meta.env.DEV
-    ? `http://localhost:3001/api/generate?provider=${providerParam}`
-    : `/api/generate?provider=${providerParam}`;
+  const apiBase = import.meta.env.VITE_API_BASE_URL
+    || (import.meta.env.DEV ? 'http://localhost:3001' : '');
+  const apiUrl = `${apiBase}/api/generate?provider=${providerParam}`;
 
   // We manually manage the conversation history to strictly control roles.
   const contents: Content[] = [

@@ -13,17 +13,23 @@ import FileStoreFactory from 'session-file-store';
 import { TOOLS_DECLARATION, SYSTEM_INSTRUCTION } from '../types.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import fs from 'fs';
 
 const FileStore = FileStoreFactory(session);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Set up service account credentials
+// Set up service account credentials (local dev only)
 if (!process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-  process.env.GOOGLE_APPLICATION_CREDENTIALS = path.resolve(process.cwd(), 'service-account.json');
+  const localSaPath = path.resolve(process.cwd(), 'service-account.json');
+  if (fs.existsSync(localSaPath)) {
+    process.env.GOOGLE_APPLICATION_CREDENTIALS = localSaPath;
+  }
 }
 
-const PROJECT_ID = 'gen-lang-client-0616796979';
+const PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT
+  || process.env.GCLOUD_PROJECT
+  || 'gen-lang-client-0616796979';
 const LOCATION_REGIONAL = 'us-central1';  // For Live API (doesn't support global)
 const LOCATION_GLOBAL = 'global';          // For Gemini 3 text models (requires global)
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
@@ -69,6 +75,8 @@ const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
 const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || 'http://localhost:3001/api/auth/callback';
 const SESSION_SECRET = process.env.SESSION_SECRET || 'change_this_to_a_random_32_char_string';
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
+const COOKIE_SECURE = process.env.COOKIE_SECURE === 'true';
+const COOKIE_SAMESITE = (process.env.COOKIE_SAMESITE || 'lax') as 'lax' | 'strict' | 'none';
 
 // OAuth2 scopes
 const SCOPES = [
@@ -99,6 +107,7 @@ declare module 'express-session' {
 const app = express();
 app.use(express.json());
 app.use(cookieParser());
+app.set('trust proxy', 1);
 
 // Session middleware with file-based storage for persistence across server restarts
 app.use(session({
@@ -112,10 +121,10 @@ app.use(session({
   resave: false,
   saveUninitialized: false,
   cookie: {
-    secure: false, // Set to true in production with HTTPS
+    secure: COOKIE_SECURE,
     httpOnly: true,
     maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-    sameSite: 'lax',
+    sameSite: COOKIE_SAMESITE,
   }
 }));
 
@@ -1016,9 +1025,9 @@ wss.on('connection', async (clientWs: WebSocket, req: IncomingMessage) => {
         realtimeInputConfig: {
           automaticActivityDetection: {
             disabled: false,
-            // MEDIUM sensitivity for better speech detection (LOW was causing missed responses)
-            startOfSpeechSensitivity: StartSensitivity.START_SENSITIVITY_MEDIUM,
-            endOfSpeechSensitivity: EndSensitivity.END_SENSITIVITY_MEDIUM,
+            // Use HIGH sensitivity (MEDIUM enum not available in current SDK)
+            startOfSpeechSensitivity: StartSensitivity.START_SENSITIVITY_HIGH,
+            endOfSpeechSensitivity: EndSensitivity.END_SENSITIVITY_HIGH,
             prefixPaddingMs: 200,  // More padding to capture speech start
             silenceDurationMs: 1000,  // Shorter silence threshold for faster response
           }

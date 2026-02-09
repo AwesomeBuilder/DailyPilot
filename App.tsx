@@ -14,7 +14,10 @@ import { AlertCircle, X, Mic, CheckSquare, Calendar, BrainCircuit, MessageSquare
 
 type ViewType = 'home' | 'tasks' | 'calendar' | 'notes' | 'drafts' | 'suggestions';
 
-const API_BASE = 'http://localhost:3001';
+const API_BASE = import.meta.env.VITE_API_BASE_URL
+  || (import.meta.env.DEV ? 'http://localhost:3001' : '');
+const WS_BASE = import.meta.env.VITE_WS_BASE_URL
+  || (API_BASE ? API_BASE.replace(/^http/, 'ws') : (import.meta.env.DEV ? 'ws://localhost:3001' : `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`));
 
 function App() {
   const [isConnected, setIsConnected] = useState(false);
@@ -1042,7 +1045,7 @@ function App() {
       const recorder = new MediaRecorder(stream, preferredMime ? { mimeType: preferredMime } : undefined);
       mediaRecorderRef.current = recorder;
 
-      const sttSocket = new WebSocket(`${API_BASE.replace(/^http/, 'ws')}/api/stt`);
+      const sttSocket = new WebSocket(`${WS_BASE}/api/stt`);
       sttSocket.binaryType = 'arraybuffer';
       sttSocketRef.current = sttSocket;
 

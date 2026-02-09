@@ -1,0 +1,4 @@
+#!include:.gitignore
+
+# Cloud Build needs package-lock.json for npm ci
+!package-lock.json

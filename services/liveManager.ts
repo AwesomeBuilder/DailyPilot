@@ -10,10 +10,11 @@ type FallbackTextHandler = (text: string) => void;
 type LiveProvider = 'vertex' | 'public';
 
 function buildWsUrl(provider: LiveProvider) {
-  const base = import.meta.env.DEV
-    ? 'ws://localhost:3001/api/live'
-    : `wss://${window.location.host}/api/live`;
-  return `${base}?provider=${provider}`;
+  const configuredBase = import.meta.env.VITE_WS_BASE_URL
+    || (import.meta.env.VITE_API_BASE_URL
+      ? import.meta.env.VITE_API_BASE_URL.replace(/^http/, 'ws')
+      : (import.meta.env.DEV ? 'ws://localhost:3001' : `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`));
+  return `${configuredBase}/api/live?provider=${provider}`;
 }
 
 export class LiveManager {
