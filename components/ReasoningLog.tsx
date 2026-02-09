@@ -136,9 +136,9 @@ export const ReasoningLog: React.FC<Props> = ({ logs }) => {
             Chain of thought...
           </div>
         )}
-        {logs.map((log) => (
+        {logs.map((log, index) => (
           <div
-            key={log.id}
+            key={`${log.id}-${log.timestamp instanceof Date ? log.timestamp.getTime() : 'no-ts'}-${index}`}
             className={`p-3 rounded-xl border-l-4 ${
               log.type === 'conflict'
                 ? 'bg-orange-50 border-orange-400 text-orange-800'

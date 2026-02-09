@@ -236,6 +236,214 @@
       .content-panel {
         transform-origin: right center;
       }
+
+      :root {
+        --dp-teal: #33605c;
+      }
+
+      .turn-logo {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        pointer-events: none;
+      }
+
+      .turn-logo__stack {
+        position: relative;
+        width: min(72%, 340px);
+        aspect-ratio: 282.96 / 289.92;
+        transition: opacity 0.6s ease, filter 0.6s ease;
+        transform: translateX(50px);
+      }
+
+      .turn-logo__part {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        transition: transform 0.75s ease, filter 0.6s ease, opacity 0.6s ease;
+        transform-origin: center center;
+      }
+
+      .turn-logo__bulb-group {
+        position: absolute;
+        inset: 0;
+        z-index: 3;
+        transition: transform 0.8s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.6s ease;
+        transform-origin: center center;
+      }
+
+      .turn-logo__detail {
+        z-index: 5;
+      }
+
+      .turn-logo__calendar {
+        z-index: 4;
+      }
+
+      .turn-logo__sparkles {
+        z-index: 6;
+        opacity: 0;
+      }
+
+      .turn-logo__brain {
+        z-index: 2;
+        opacity: 0;
+        transition: opacity 0.6s ease;
+        transform: translate(-2px, 0px) scale(1.18);
+      }
+
+      .turn-logo__half-bulb {
+        z-index: 1;
+        opacity: 0;
+        transition: opacity 0.6s ease;
+        transform-origin: 46% 28%;
+        transform: translate(40px, -16px) rotate(23.2deg);
+      }
+
+      .turn-logo__bulb-group {
+        opacity: 0;
+        display: none;
+        transform: translateX(8px) scale(0.96);
+      }
+
+      /* Intro (greyed out full logo) */
+      .turn-logo--intro .turn-logo__brain {
+        opacity: 0.55;
+        filter: grayscale(1) brightness(1.15);
+      }
+
+      .turn-logo--intro .turn-logo__half-bulb {
+        opacity: 0.55;
+        filter: grayscale(1) brightness(1.15);
+      }
+
+      .turn-logo--intro .turn-logo__bulb-group {
+        opacity: 0;
+        filter: grayscale(1) brightness(1.15);
+        transform: translateX(0) scale(1);
+      }
+
+      .turn-logo--intro .turn-logo__sparkles {
+        opacity: 0;
+      }
+
+      /* Listening (brain only) */
+      .turn-logo--listening .turn-logo__brain {
+        opacity: 1;
+        animation: brainPulse 1.6s ease-in-out infinite;
+      }
+
+      .turn-logo--listening .turn-logo__bulb-group {
+        opacity: 0;
+        transform: translateX(10px) scale(0.94);
+      }
+
+      .turn-logo--listening .turn-logo__half-bulb {
+        opacity: 0;
+      }
+
+      /* Thinking (brain + sparkles only) */
+      .turn-logo--thinking .turn-logo__brain {
+        opacity: 1;
+        animation: brainPulse 1.6s ease-in-out infinite;
+      }
+
+      .turn-logo--thinking .turn-logo__sparkles {
+        opacity: 1;
+        animation: twinkle 1.6s ease-in-out infinite;
+      }
+
+      .turn-logo--thinking .turn-logo__bulb-group {
+        opacity: 1;
+        display: block;
+        transform: translateX(0) scale(1);
+      }
+
+      .turn-logo--thinking .turn-logo__half-bulb {
+        opacity: 0;
+      }
+
+      .turn-logo--thinking .turn-logo__calendar,
+      .turn-logo--thinking .turn-logo__detail {
+        opacity: 0;
+      }
+
+      /* Speaking (full logo glowing) */
+      .turn-logo--speaking .turn-logo__brain {
+        opacity: 1;
+        animation: none;
+      }
+
+      .turn-logo--speaking .turn-logo__half-bulb {
+        opacity: 1;
+      }
+
+      .turn-logo--speaking .turn-logo__bulb-group {
+        opacity: 1;
+        display: block;
+        transform: translateX(-12px) scale(1);
+      }
+
+      .turn-logo--speaking .turn-logo__calendar,
+      .turn-logo--speaking .turn-logo__detail,
+      .turn-logo--speaking .turn-logo__sparkles {
+        opacity: 1;
+      }
+
+      .turn-logo--speaking .turn-logo__sparkles {
+        opacity: 1;
+        animation: none;
+      }
+
+      /* Rest (full logo calm) */
+      .turn-logo--rest .turn-logo__brain {
+        opacity: 1;
+        animation: none;
+        transform: translate(-2px, 0px) scale(1.18);
+      }
+
+      .turn-logo--rest .turn-logo__half-bulb {
+        opacity: 1;
+      }
+
+      .turn-logo--rest .turn-logo__bulb-group {
+        opacity: 0;
+        transform: translateX(0) scale(1);
+      }
+
+      .turn-logo--rest .turn-logo__sparkles {
+        opacity: 0;
+        animation: none;
+      }
+
+
+      @keyframes pulseScale {
+        0%, 100% { transform: scale(1.02); }
+        50% { transform: scale(1.05); }
+      }
+
+      @keyframes brainPulse {
+        0%, 100% { opacity: 0.9; }
+        50% { opacity: 1; }
+      }
+
+      @keyframes outlineGlow {
+        0%, 100% { filter: drop-shadow(0 0 6px rgba(51, 96, 92, 0.2)); }
+        50% { filter: drop-shadow(0 0 12px rgba(51, 96, 92, 0.5)); }
+      }
+
+      @keyframes glowPulse {
+        0%, 100% { opacity: 0.85; }
+        50% { opacity: 1; }
+      }
+
+      @keyframes twinkle {
+        0%, 100% { opacity: 0.4; transform: scale(0.96); }
+        50% { opacity: 1; transform: scale(1.08); }
+      }
     </style>
   <script type="importmap">
 {

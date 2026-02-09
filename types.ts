@@ -52,7 +52,7 @@ export interface MessageDraft {
   content: string;
 }
 
-// Tool Definitions for Gemini
+// Tool Definitions for Gemini 3
 export const TOOLS_DECLARATION: FunctionDeclaration[] = [
   {
     name: "log_thought",

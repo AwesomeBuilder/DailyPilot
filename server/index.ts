@@ -5,6 +5,8 @@ import type { IncomingMessage } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { GoogleGenAI, Modality, StartSensitivity, EndSensitivity } from '@google/genai';
 import { google, calendar_v3, tasks_v1 } from 'googleapis';
+import textToSpeech from '@google-cloud/text-to-speech';
+import speech from '@google-cloud/speech';
 import cookieParser from 'cookie-parser';
 import session from 'express-session';
 import FileStoreFactory from 'session-file-store';
@@ -17,14 +19,25 @@ const FileStore = FileStoreFactory(session);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Set up service account credentials
-process.env.GOOGLE_APPLICATION_CREDENTIALS = path.resolve(__dirname, '../service-account.json');
+if (!process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+  process.env.GOOGLE_APPLICATION_CREDENTIALS = path.resolve(process.cwd(), 'service-account.json');
+}
 
 const PROJECT_ID = 'gen-lang-client-0616796979';
 const LOCATION_REGIONAL = 'us-central1';  // For Live API (doesn't support global)
-const LOCATION_GLOBAL = 'global';          // For Gemini 3 models (requires global)
+const LOCATION_GLOBAL = 'global';          // For Gemini 3 text models (requires global)
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
-const LIVE_MODEL_VERTEX = process.env.GEMINI_LIVE_MODEL_VERTEX || 'gemini-live-2.5-flash-native-audio';
-const LIVE_MODEL_PUBLIC = process.env.GEMINI_LIVE_MODEL_PUBLIC || 'gemini-2.5-flash-native-audio-preview-12-2025';
+const GEMINI_3_PRO_MODEL_VERTEX =
+  'publishers/google/models/gemini-3-pro-preview';
+const GEMINI_3_PRO_MODEL_PUBLIC =
+  'gemini-3-pro-preview';
+const GEMINI_3_FLASH_MODEL_VERTEX =
+  'publishers/google/models/gemini-3-flash-preview';
+// Live multimodal interaction via Gemini Live API.
+// Gemini 3 Pro Preview supports multimodal inputs and streaming function calling,
+// so we default Live to Gemini 3 Pro Preview unless overridden.
+const LIVE_MODEL_VERTEX = process.env.GEMINI_LIVE_MODEL_VERTEX || GEMINI_3_PRO_MODEL_VERTEX;
+const LIVE_MODEL_PUBLIC = process.env.GEMINI_LIVE_MODEL_PUBLIC || GEMINI_3_PRO_MODEL_PUBLIC;
 
 // Initialize Vertex AI client for Live API (regional endpoint)
 const aiLive = new GoogleGenAI({
@@ -42,6 +55,13 @@ const aiText = new GoogleGenAI({
   project: PROJECT_ID,
   location: LOCATION_GLOBAL,
 });
+const aiTextPublic = GEMINI_API_KEY
+  ? new GoogleGenAI({ apiKey: GEMINI_API_KEY })
+  : null;
+
+// Google Cloud Text-to-Speech client (server-side)
+const ttsClient = new textToSpeech.TextToSpeechClient();
+const sttClient = new speech.SpeechClient();
 
 // OAuth2 Configuration
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
@@ -610,10 +630,21 @@ function parseDuration(duration: string): number {
 // Text generation endpoint (for textAgent)
 app.post('/api/generate', async (req, res) => {
   try {
-    const { contents, config } = req.body;
+    const { contents, config, provider } = req.body;
+    const textProvider: 'vertex' | 'public' = provider === 'public' ? 'public' : 'vertex';
+    const textClient = textProvider === 'public' ? aiTextPublic : aiText;
 
-    const response = await aiText.models.generateContent({
-      model: 'gemini-3-flash-preview',
+    if (textProvider === 'public' && !textClient) {
+      return res.status(500).json({
+        error: 'Public Gemini API is not configured (missing GEMINI_API_KEY).',
+      });
+    }
+
+    const textModel = textProvider === 'public'
+      ? GEMINI_3_PRO_MODEL_PUBLIC
+      : GEMINI_3_PRO_MODEL_VERTEX;
+    const response = await textClient!.models.generateContent({
+      model: textModel,
       config: {
         ...config,
         systemInstruction: SYSTEM_INSTRUCTION,
@@ -635,11 +666,197 @@ app.post('/api/generate', async (req, res) => {
   }
 });
 
+// Text-to-Speech endpoint (Google Cloud TTS)
+app.post('/api/tts', async (req, res) => {
+  try {
+    const { text } = req.body as { text?: string };
+    if (!text || typeof text !== 'string') {
+      return res.status(400).json({ error: 'Missing text for TTS.' });
+    }
+
+    const [response] = await ttsClient.synthesizeSpeech({
+      input: { text },
+      voice: {
+        languageCode: 'en-US',
+        name: 'en-US-Wavenet-D',
+      },
+      audioConfig: {
+        audioEncoding: 'MP3',
+        speakingRate: 1.0,
+      },
+    });
+
+    const audioContent = response.audioContent;
+    if (!audioContent) {
+      return res.status(500).json({ error: 'No audio content returned from TTS.' });
+    }
+
+    res.json({
+      audioBase64: Buffer.from(audioContent as Uint8Array).toString('base64'),
+      mimeType: 'audio/mpeg',
+    });
+  } catch (error: any) {
+    console.error('TTS error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Speech-to-Text endpoint (Google Cloud STT)
+app.post('/api/stt', async (req, res) => {
+  try {
+    const { audioBase64, mimeType } = req.body as { audioBase64?: string; mimeType?: string };
+    if (!audioBase64 || typeof audioBase64 !== 'string') {
+      return res.status(400).json({ error: 'Missing audio for STT.' });
+    }
+
+    const encoding = mimeType?.includes('ogg') ? 'OGG_OPUS' : 'WEBM_OPUS';
+
+    const [response] = await sttClient.recognize({
+      audio: {
+        content: audioBase64,
+      },
+      config: {
+        encoding,
+        sampleRateHertz: 48000,
+        languageCode: 'en-US',
+        enableAutomaticPunctuation: true,
+      },
+    });
+
+    const transcript = response.results
+      ?.map(result => result.alternatives?.[0]?.transcript || '')
+      .join(' ')
+      .trim();
+
+    if (!transcript) {
+      return res.status(200).json({ transcript: '' });
+    }
+
+    res.json({ transcript });
+  } catch (error: any) {
+    console.error('STT error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Create HTTP server
 const server = createServer(app);
 
+// WebSocket server for Streaming STT
+const sttWss = new WebSocketServer({
+  noServer: true,
+  perMessageDeflate: false,
+});
+
+sttWss.on('connection', (clientWs: WebSocket) => {
+  let recognizeStream: any = null;
+  let finalTranscript = '';
+
+  const startStream = (mimeType: string | undefined) => {
+    const encoding = mimeType?.includes('ogg') ? 'OGG_OPUS' : 'WEBM_OPUS';
+    recognizeStream = sttClient.streamingRecognize({
+      config: {
+        encoding,
+        sampleRateHertz: 48000,
+        languageCode: 'en-US',
+        enableAutomaticPunctuation: true,
+      },
+      interimResults: true,
+    });
+
+    recognizeStream.on('data', (data: any) => {
+      const result = data?.results?.[0];
+      const alternative = result?.alternatives?.[0];
+      const text = alternative?.transcript?.trim();
+      if (!text) return;
+      if (result?.isFinal) {
+        finalTranscript += `${text} `;
+        if (clientWs.readyState === WebSocket.OPEN) {
+          clientWs.send(JSON.stringify({ type: 'final', text }));
+        }
+      } else if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.send(JSON.stringify({ type: 'interim', text }));
+      }
+    });
+
+    recognizeStream.on('error', (err: any) => {
+      console.error('Streaming STT error:', err);
+      if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.send(JSON.stringify({ type: 'error', error: err.message || 'Streaming STT failed.' }));
+        clientWs.close();
+      }
+      stopStream();
+    });
+
+    recognizeStream.on('end', () => {
+      if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.send(JSON.stringify({ type: 'end', transcript: finalTranscript.trim() }));
+      }
+      finalTranscript = '';
+    });
+  };
+
+  const stopStream = () => {
+    if (recognizeStream) {
+      recognizeStream.end();
+      recognizeStream = null;
+    }
+  };
+
+  clientWs.on('message', (data, isBinary) => {
+    if (!isBinary) {
+      try {
+        const payload = JSON.parse(data.toString());
+        if (payload.type === 'start') {
+          startStream(payload.mimeType);
+        }
+        if (payload.type === 'stop') {
+          stopStream();
+        }
+      } catch (err) {
+        console.error('Streaming STT control parse error:', err);
+      }
+      return;
+    }
+
+    if (!recognizeStream) {
+      startStream(undefined);
+    }
+    recognizeStream.write(data);
+  });
+
+  clientWs.on('close', () => {
+    stopStream();
+  });
+});
+
 // WebSocket server for Live API
-const wss = new WebSocketServer({ server, path: '/api/live' });
+const wss = new WebSocketServer({
+  noServer: true,
+  perMessageDeflate: false,
+});
+
+server.on('upgrade', (req, socket, head) => {
+  const host = req.headers.host || 'localhost';
+  const url = new URL(req.url || '', `http://${host}`);
+  const { pathname } = url;
+
+  if (pathname === '/api/stt') {
+    sttWss.handleUpgrade(req, socket, head, (ws) => {
+      sttWss.emit('connection', ws, req);
+    });
+    return;
+  }
+
+  if (pathname === '/api/live') {
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit('connection', ws, req);
+    });
+    return;
+  }
+
+  socket.destroy();
+});
 
 wss.on('connection', async (clientWs: WebSocket, req: IncomingMessage) => {
   const host = req.headers.host || 'localhost';
@@ -650,6 +867,17 @@ wss.on('connection', async (clientWs: WebSocket, req: IncomingMessage) => {
   const liveClient = provider === 'public' ? aiLivePublic : aiLive;
 
   console.log(`Client connected to Live API proxy (provider=${provider}, model=${liveModel})`);
+
+  if (!liveModel) {
+    const errorMessage =
+      'Gemini Live model is not configured. Set GEMINI_LIVE_MODEL_VERTEX or GEMINI_LIVE_MODEL_PUBLIC.';
+    console.error(errorMessage);
+    if (clientWs.readyState === WebSocket.OPEN) {
+      clientWs.send(JSON.stringify({ type: 'error', error: errorMessage }));
+    }
+    clientWs.close();
+    return;
+  }
 
   if (provider === 'public' && !liveClient) {
     const errorMessage = 'Public Gemini API is not configured (missing GEMINI_API_KEY).';
@@ -772,12 +1000,13 @@ wss.on('connection', async (clientWs: WebSocket, req: IncomingMessage) => {
   }
 
   try {
-    // Connect to Gemini Live API via Vertex AI
+    // Connect to Gemini Live API via Vertex AI (Gemini 3 Pro Preview for Live)
     geminiSession = await liveClient!.live.connect({
       model: liveModel,
       config: {
         responseModalities: [Modality.AUDIO],
-        // Temperature 1.0 is CRITICAL - values below cause loops in Gemini 2.5
+        // Parameters tuned for Gemini 3 models to balance reasoning depth
+        // and conversational stability during multi-turn interactions.
         temperature: 1.0,
         systemInstruction: SYSTEM_INSTRUCTION,
         tools: [{ functionDeclarations: TOOLS_DECLARATION }],

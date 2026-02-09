@@ -79,7 +79,7 @@ export const VoiceControl: React.FC<Props> = ({
             {/* Status Text */}
             <div className="mt-6 text-center">
                 <h3 className={`text-base font-medium ${isRecording ? 'text-teal-primary' : 'text-teal-dark/60'}`}>
-                  {isRecording ? 'Listening...' : 'Tap to speak'}
+                  {isRecording ? 'Listening' : 'Tap microphone to start'}
                 </h3>
             </div>
           </div>

@@ -7,7 +7,7 @@ import { TaskList } from './components/TaskList';
 import { CalendarView } from './components/CalendarView';
 import { SuggestionList } from './components/SuggestionList';
 import { MessageDraftList } from './components/MessageDraftList';
-import { FabricWave3D } from './components/FabricWave3D';
+import { TurnLogo } from './components/TurnLogo';
 import { GoogleSignIn } from './components/GoogleSignIn';
 import { useAuth } from './hooks/useAuth';
 import { AlertCircle, X, Mic, CheckSquare, Calendar, BrainCircuit, MessageSquare, Lightbulb, Keyboard, Send, Loader2, ArrowRight, Sparkles } from 'lucide-react';
@@ -23,6 +23,9 @@ function App() {
   const [liveProvider, setLiveProvider] = useState<'vertex' | 'public'>('vertex');
   const [heardRecently, setHeardRecently] = useState(false);
   const [isFallbackSpeaking, setIsFallbackSpeaking] = useState(false);
+  const [isTtsPending, setIsTtsPending] = useState(false);
+  const [hasConversation, setHasConversation] = useState(false);
+  const [turnResetting, setTurnResetting] = useState(false);
   const handleTextSubmitRef = useRef<(text: string) => Promise<string | null>>(async () => null);
   const [volume, setVolume] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -33,9 +36,8 @@ function App() {
   const [isPanelExiting, setIsPanelExiting] = useState(false);
   const [inputMode, setInputMode] = useState<'voice' | 'text'>('voice');
   const [textInput, setTextInput] = useState('');
-  const [signInBannerDismissed, setSignInBannerDismissed] = useState(() => {
-    return localStorage.getItem('signInBannerDismissed') === 'true';
-  });
+  const [signInBannerDismissed, setSignInBannerDismissed] = useState(false);
+  const [isDemoInView, setIsDemoInView] = useState(true);
 
   // Google OAuth authentication
   const { isAuthenticated, isLoading: authLoading, error: authError, login, logout, clearError } = useAuth();
@@ -65,6 +67,14 @@ function App() {
   const [userProfile, setUserProfile] = useState<Record<string, string>>({});
 
   const liveManager = useRef<LiveManager | null>(null);
+  const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
+  const ttsAbortRef = useRef<AbortController | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const sttSocketRef = useRef<WebSocket | null>(null);
+  const sttFinalTranscriptRef = useRef<string>('');
+  const sttAbortRef = useRef(false);
+  const prevTextHasContentRef = useRef(false);
 
   // Load Profile from LocalStorage on Mount
   useEffect(() => {
@@ -101,6 +111,39 @@ function App() {
         setUserLocation("San Francisco, CA (Default)");
     }
   }, []);
+
+  // Track when the demo section is in view to toggle the floating CTA
+  useEffect(() => {
+    const demoSection = document.getElementById('live-demo');
+    if (!demoSection) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        setIsDemoInView(entry.isIntersecting);
+      },
+      { threshold: 0.2 }
+    );
+
+    observer.observe(demoSection);
+    return () => observer.disconnect();
+  }, []);
+
+  const triggerTurnReset = useCallback(() => {
+    setTurnResetting(true);
+    window.setTimeout(() => setTurnResetting(false), 420);
+  }, []);
+
+  useEffect(() => {
+    if (inputMode !== 'text') {
+      prevTextHasContentRef.current = false;
+      return;
+    }
+    const hasContent = textInput.trim().length > 0;
+    if (hasContent && !prevTextHasContentRef.current) {
+      triggerTurnReset();
+    }
+    prevTextHasContentRef.current = hasContent;
+  }, [inputMode, textInput, triggerTurnReset]);
 
   // Fetch calendar events and tasks when authenticated
   useEffect(() => {
@@ -526,7 +569,7 @@ function App() {
             content: `Checked Calendar for "${args.query}". Found ${foundEvents.length} events.${isAuthenticated ? ' (Google Calendar)' : ' (Demo Data)'}`,
             type: 'reasoning'
         }]);
-        // Include explicit completion hint to help Gemini stop looping (known bug workaround)
+        // Include explicit completion hint to help Gemini 3 stop looping (known bug workaround)
         return {
           events: foundEvents,
           status: "complete",
@@ -928,7 +971,7 @@ function App() {
             },
             (err) => setError(err),
             (vol) => setVolume(vol),
-            // Handle reasoning thoughts from Gemini's thinkingConfig
+            // Handle reasoning thoughts from Gemini 3 thinkingConfig
             (thought) => {
                 setLogs(prev => [...prev, {
                     id: Date.now().toString() + '-thought',
@@ -966,7 +1009,158 @@ function App() {
     return () => clearTimeout(timer);
   }, [liveActivity]);
 
+  const cleanupTurnBasedResources = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      mediaRecorderRef.current.stop();
+    }
+    mediaStreamRef.current?.getTracks().forEach(track => track.stop());
+    mediaStreamRef.current = null;
+    if (sttSocketRef.current && sttSocketRef.current.readyState < WebSocket.CLOSING) {
+      sttSocketRef.current.close();
+    }
+    sttSocketRef.current = null;
+    setIsRecording(false);
+  };
+
+  const stopTurnBasedRecording = async () => {
+    if (!mediaRecorderRef.current) return;
+    if (mediaRecorderRef.current.state !== 'recording') return;
+    mediaRecorderRef.current.stop();
+  };
+
+  const startTurnBasedRecording = async () => {
+    setError(null);
+    try {
+      sttAbortRef.current = false;
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+      sttFinalTranscriptRef.current = '';
+
+      const preferredMime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : '';
+      const recorder = new MediaRecorder(stream, preferredMime ? { mimeType: preferredMime } : undefined);
+      mediaRecorderRef.current = recorder;
+
+      const sttSocket = new WebSocket(`${API_BASE.replace(/^http/, 'ws')}/api/stt`);
+      sttSocket.binaryType = 'arraybuffer';
+      sttSocketRef.current = sttSocket;
+
+      sttSocket.onopen = () => {
+        sttSocket.send(JSON.stringify({
+          type: 'start',
+          mimeType: recorder.mimeType || 'audio/webm',
+        }));
+        recorder.start(250);
+      };
+
+      sttSocket.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data as string);
+          if (payload.type === 'interim') {
+            return;
+          }
+          if (payload.type === 'final' && payload.text) {
+            sttFinalTranscriptRef.current += `${payload.text} `;
+          }
+          if (payload.type === 'error') {
+            setError(payload.error || 'Streaming STT failed.');
+            sttAbortRef.current = true;
+            setIsProcessingText(false);
+            cleanupTurnBasedResources();
+            return;
+          }
+          if (payload.type === 'end') {
+            const transcript = (payload.transcript || sttFinalTranscriptRef.current).trim();
+            if (!transcript) {
+              setError('No speech detected. Try again.');
+              setIsProcessingText(false);
+              return;
+            }
+
+            setHasConversation(true);
+            setLogs(prev => [...prev, {
+              id: Date.now().toString(),
+              timestamp: new Date(),
+              content: `Voice Input: "${transcript}"`,
+              type: 'reasoning'
+            }]);
+
+            handleTextSubmitRef.current(transcript)
+              .then(responseText => {
+                if (responseText) {
+                  speakText(responseText);
+                }
+              })
+              .catch((err) => {
+                console.error(err);
+                setError(err.message || 'Voice processing failed.');
+              })
+              .finally(() => {
+                setIsProcessingText(false);
+              });
+            sttSocketRef.current?.close();
+            sttSocketRef.current = null;
+          }
+        } catch (err) {
+          console.error(err);
+        }
+      };
+
+      sttSocket.onerror = () => {
+        setError('Streaming STT connection failed.');
+        sttAbortRef.current = true;
+        setIsProcessingText(false);
+        cleanupTurnBasedResources();
+      };
+      sttSocket.onclose = () => {
+        sttSocketRef.current = null;
+        if (sttAbortRef.current) {
+          setIsProcessingText(false);
+          setIsRecording(false);
+        }
+      };
+
+      recorder.onstop = async () => {
+        setIsRecording(false);
+        if (sttAbortRef.current) {
+          sttAbortRef.current = false;
+          setIsProcessingText(false);
+          cleanupTurnBasedResources();
+          return;
+        }
+        setIsProcessingText(true);
+        sttSocketRef.current?.send(JSON.stringify({ type: 'stop' }));
+        mediaStreamRef.current?.getTracks().forEach(track => track.stop());
+        mediaStreamRef.current = null;
+      };
+
+      recorder.ondataavailable = async (event) => {
+        if (!event.data || event.data.size === 0) return;
+        if (!sttSocketRef.current || sttSocketRef.current.readyState !== WebSocket.OPEN) return;
+        const buffer = await event.data.arrayBuffer();
+        sttSocketRef.current.send(buffer);
+      };
+
+      triggerTurnReset();
+      setIsRecording(true);
+    } catch (err: any) {
+      console.error(err);
+      setError('Microphone access failed.');
+      setIsRecording(false);
+    }
+  };
+
   const toggleRecording = async () => {
+    if (inputMode === 'voice') {
+      if (isRecording) {
+        await stopTurnBasedRecording();
+      } else {
+        await startTurnBasedRecording();
+      }
+      return;
+    }
+
     if (!liveManager.current) return;
     if (isRecording) {
       liveManager.current.stopAudio();
@@ -975,9 +1169,11 @@ function App() {
       setError(null);
       if (!liveManager.current.isConnected) {
           await liveManager.current.connect();
+          triggerTurnReset();
           setIsRecording(true);
       } else {
           await liveManager.current.startAudio();
+          triggerTurnReset();
           setIsRecording(true);
       }
     }
@@ -988,7 +1184,7 @@ function App() {
     setLiveProvider(provider);
     if (!liveManager.current) return;
     liveManager.current.setProvider(provider);
-    if (isConnected && inputMode === 'voice') {
+    if (isConnected && inputMode !== 'voice') {
       liveManager.current.disconnect();
       await liveManager.current.connect();
       setIsRecording(true);
@@ -998,6 +1194,7 @@ function App() {
   const handleTextSubmit = async (text: string): Promise<string | null> => {
     setIsProcessingText(true);
     setError(null);
+    setHasConversation(true);
 
     setLogs(prev => [...prev, {
         id: Date.now().toString(),
@@ -1037,7 +1234,7 @@ function App() {
         ${text}
         `;
 
-        const response = await processTextPrompt(contextString, handleToolCall);
+        const response = await processTextPrompt(contextString, handleToolCall, liveProvider);
 
         const textPart = response.candidates?.[0]?.content?.parts?.find((p: any) => p.text);
 
@@ -1081,15 +1278,155 @@ function App() {
     handleTextSubmitRef.current = handleTextSubmit;
   }, [handleTextSubmit]);
 
-  const speakText = useCallback((text: string) => {
-    if (typeof window === 'undefined' || !window.speechSynthesis) return;
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.onstart = () => setIsFallbackSpeaking(true);
-    utterance.onend = () => setIsFallbackSpeaking(false);
-    utterance.onerror = () => setIsFallbackSpeaking(false);
-    window.speechSynthesis.speak(utterance);
+  const stripMarkdownForSpeech = (text: string) => {
+    if (!text) return text;
+    let cleaned = text;
+    // Remove fenced code blocks (keep content)
+    cleaned = cleaned.replace(/```[\s\S]*?```/g, (match) => {
+      const inner = match.replace(/```[a-zA-Z0-9-]*\n?/, '').replace(/```$/, '');
+      return `Here's code: ${inner.trim()}`;
+    });
+    // Inline blockquotes -> "Quote: ..."
+    cleaned = cleaned.replace(/^\s*>\s+/gm, 'Quote: ');
+    // Headings: keep text, but separate with line breaks (natural pause)
+    cleaned = cleaned.replace(/^#{1,6}\s+(.+)$/gm, (_m, title) => `${title}\n`);
+    // Images ![alt](url) -> alt
+    cleaned = cleaned.replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1');
+    // Links [text](url) -> text
+    cleaned = cleaned.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+    // Inline code `text` -> text
+    cleaned = cleaned.replace(/`([^`]+)`/g, '$1');
+    // Bold **text** -> text
+    cleaned = cleaned.replace(/\*\*([^*]+)\*\*/g, '$1');
+    // Italic *text* -> text
+    cleaned = cleaned.replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, '$1$2');
+    // Remove stray markdown characters
+    cleaned = cleaned.replace(/[*_~]/g, '');
+    // Convert lists with human-friendly sequencing
+    const lines = cleaned.split('\n');
+    const out: string[] = [];
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      const bulletMatch = line.match(/^\s*[-*]\s+(.+)$/);
+      const numberMatch = line.match(/^\s*(\d+)\.\s+(.+)$/);
+      if (bulletMatch || numberMatch) {
+        const items: string[] = [];
+        let j = i;
+        while (j < lines.length) {
+          const l = lines[j];
+          const b = l.match(/^\s*[-*]\s+(.+)$/);
+          const n = l.match(/^\s*(\d+)\.\s+(.+)$/);
+          if (!b && !n) break;
+          items.push((b ? b[1] : n![2]).trim());
+          j += 1;
+        }
+        items.forEach((item, idx) => {
+          if (items.length === 1) {
+            out.push(`First: ${item}`);
+          } else if (idx === 0) {
+            out.push(`First: ${item}`);
+          } else if (idx === items.length - 1) {
+            out.push(`Lastly: ${item}`);
+          } else {
+            out.push(`Next: ${item}`);
+          }
+        });
+        i = j;
+        continue;
+      }
+      out.push(line);
+      i += 1;
+    }
+    // Normalize whitespace
+    cleaned = out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+    return cleaned;
+  };
+
+  const speakText = useCallback(async (text: string) => {
+    if (!text) return;
+    const speechText = stripMarkdownForSpeech(text);
+    if (!speechText) return;
+    try {
+      setIsTtsPending(true);
+      ttsAbortRef.current?.abort();
+      ttsAbortRef.current = new AbortController();
+
+      if (ttsAudioRef.current) {
+        ttsAudioRef.current.pause();
+        ttsAudioRef.current.src = '';
+        ttsAudioRef.current = null;
+      }
+
+      setIsFallbackSpeaking(false);
+      const response = await fetch(`${API_BASE}/api/tts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: speechText }),
+        signal: ttsAbortRef.current.signal,
+      });
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.error || 'TTS request failed');
+      }
+
+      const { audioBase64, mimeType } = await response.json();
+      const audio = new Audio(`data:${mimeType};base64,${audioBase64}`);
+      ttsAudioRef.current = audio;
+      audio.onplay = () => {
+        setIsTtsPending(false);
+        setIsFallbackSpeaking(true);
+      };
+      audio.onended = () => {
+        setIsFallbackSpeaking(false);
+        setIsTtsPending(false);
+      };
+      audio.onerror = () => {
+        setIsFallbackSpeaking(false);
+        setIsTtsPending(false);
+      };
+      await audio.play();
+    } catch (error) {
+      console.error('TTS playback failed:', error);
+      setIsFallbackSpeaking(false);
+      setIsTtsPending(false);
+
+      if (typeof window !== 'undefined' && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(speechText);
+        utterance.onstart = () => {
+          setIsTtsPending(false);
+          setIsFallbackSpeaking(true);
+        };
+        utterance.onend = () => {
+          setIsFallbackSpeaking(false);
+          setIsTtsPending(false);
+        };
+        utterance.onerror = () => {
+          setIsFallbackSpeaking(false);
+          setIsTtsPending(false);
+        };
+        window.speechSynthesis.speak(utterance);
+      }
+    }
   }, []);
+
+  const isTextComposing = inputMode === 'text' && textInput.trim().length > 0 && !isProcessingText;
+  const isListening = isRecording || liveActivity === 'listening' || isTextComposing;
+  const isThinking = isProcessingText || liveActivity === 'thinking';
+  const isSpeaking = liveActivity === 'speaking' || isFallbackSpeaking || isTtsPending;
+  const turnState = turnResetting
+    ? 'intro'
+    : isListening
+    ? 'listening'
+    : isThinking
+    ? 'thinking'
+    : isSpeaking
+    ? 'speaking'
+    : !hasConversation
+    ? 'intro'
+    : 'rest';
 
   // Calculate unseen counts for badges
   const getUnseenCount = (viewType: ViewType) => {
@@ -1185,7 +1522,7 @@ function App() {
               </span>
             </div>
             <p className="text-xs md:text-sm text-gray-500 leading-snug">
-              Voice-first control for tasks, calendar, and notes — the live demo is front and center.
+              Your Smart Personal Assistant
             </p>
           </div>
         </button>
@@ -1224,7 +1561,6 @@ function App() {
           <button
             onClick={() => {
               setSignInBannerDismissed(true);
-              localStorage.setItem('signInBannerDismissed', 'true');
             }}
             className="flex-shrink-0 p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-200 rounded-lg transition-colors"
             title="Dismiss"
@@ -1258,9 +1594,9 @@ function App() {
             <div className={`voice-panel flex flex-col items-center w-full max-w-lg flex-shrink-0 z-20 ${isPanelExiting ? 'delayed-return' : ''} ${activeView !== 'home' ? 'md:-translate-x-[55%]' : 'translate-x-0'}`}>
                 {/* Wave Container with Mic/Input */}
                 <div className="relative w-full max-w-md md:max-w-lg aspect-square md:aspect-[4/3]">
-                  {/* Wave Background */}
+                  {/* Turn Logo Background */}
                   <div className="absolute inset-0 rounded-3xl overflow-hidden shadow-xl bg-gradient-to-b from-white to-teal-50">
-                    <FabricWave3D isActive={isRecording || isProcessingText || liveActivity !== 'idle'} />
+                    <TurnLogo state={turnState} />
                   </div>
 
                   {/* Mode Toggle - top right of wave container */}
@@ -1348,40 +1684,53 @@ function App() {
 
                 {/* Status Text */}
                 <div className={`text-center ${inputMode === 'text' ? 'mt-16' : 'mt-14'}`}>
-                  <p className={`text-sm ${isRecording || isProcessingText || liveActivity !== 'idle' || isFallbackSpeaking ? 'text-teal-primary font-medium' : 'text-gray-400'}`}>
-                    {isProcessingText
-                      ? 'Processing...'
-                      : inputMode === 'voice'
-                        ? (!isConnected
-                          ? 'Tap microphone to start'
-                          : isFallbackSpeaking
-                            ? 'Speaking...'
-                          : liveActivity === 'thinking'
-                            ? (heardRecently ? 'Got it — thinking...' : 'Thinking...')
-                            : liveActivity === 'speaking'
-                              ? 'Speaking...'
-                              : liveActivity === 'listening'
-                                ? 'Listening...'
-                                : isRecording
-                                  ? 'Listening...'
-                                  : 'Tap to speak')
-                        : 'Type and press enter'}
+                  <p className={`text-sm ${isRecording || isProcessingText || isTextComposing || liveActivity !== 'idle' || isSpeaking ? 'text-teal-primary font-medium' : 'text-gray-400'}`}>
+                    {inputMode === 'voice' ? (
+                      isThinking ? (
+                        'Thinking...'
+                      ) : isSpeaking ? (
+                        <span className="inline-flex items-center gap-1.5">
+                          <Sparkles size={12} />
+                          <span>Piloting</span>
+                        </span>
+                      ) : isListening ? (
+                        'Listening'
+                      ) : (
+                        'Tap microphone to start'
+                      )
+                    ) : isThinking ? (
+                      'Thinking...'
+                    ) : isSpeaking ? (
+                      <span className="inline-flex items-center gap-1.5">
+                        <Sparkles size={12} />
+                        <span>Piloting</span>
+                      </span>
+                    ) : isTextComposing ? (
+                      'Reading...'
+                    ) : (
+                      'Tap to type'
+                    )}
                   </p>
+                  {inputMode === 'voice' && isRecording && (
+                    <p className="mt-1 text-xs text-gray-500/80">
+                      Tap the mic again when you are done.
+                    </p>
+                  )}
                 </div>
 
-                {/* Example prompts for authenticated users */}
-                {isAuthenticated && !isRecording && !isProcessingText && logs.length === 0 && (
-                  <div className="mt-6 text-center fade-in">
+                {/* Example prompts */}
+                {inputMode === 'voice' && !isRecording && !isProcessingText && liveActivity === 'idle' && !isSpeaking && (
+                  <div className="mt-4 text-center fade-in">
                     <p className="text-xs text-gray-400 mb-3 flex items-center justify-center gap-1.5">
                       <Sparkles size={12} />
-                      Try saying or typing
+                      Try saying
                     </p>
                     <div className="flex flex-wrap justify-center gap-2 max-w-md mx-auto">
                       {[
                         "What's on my schedule today?",
-                        "Add a task to call mom",
-                        "Schedule lunch with Sarah tomorrow",
-                        "Do I have any conflicts this week?",
+                        'Add a task to call mom',
+                        'Schedule lunch with Sarah tomorrow',
+                        'Do I have any conflicts this week?',
                       ].map((prompt, idx) => (
                         <button
                           key={idx}
@@ -1435,18 +1784,12 @@ function App() {
                 <p className="text-xs uppercase font-semibold text-teal-primary tracking-wide">How it works</p>
                 <h3 className="text-2xl md:text-3xl font-bold">3-step flow</h3>
               </div>
-              <button
-                onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-                className="px-4 py-2 rounded-full bg-teal-50 text-teal-dark border border-teal-100 hover:bg-teal-100 transition-colors text-sm font-semibold"
-              >
-                Back to demo
-              </button>
             </div>
             <div className="grid md:grid-cols-3 gap-4">
               {[
                 {
                   title: '1) Capture',
-                  copy: 'Tap mic or type. Audio streams to LiveManager; text falls back to Gemini.',
+                  copy: 'Tap mic or type. Voice runs STT → Gemini 3 → TTS for fast turn-based responses.',
                   icon: Mic,
                 },
                 {
@@ -1480,15 +1823,13 @@ function App() {
                 <p className="text-xs uppercase font-semibold tracking-wide text-teal-100">Future possibilities</p>
                 <h3 className="text-2xl md:text-3xl font-bold">Where we take this next</h3>
               </div>
-              <button
-                onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-                className="px-4 py-2 rounded-full bg-white/10 border border-white/30 text-white hover:bg-white/15 transition-colors text-sm font-semibold"
-              >
-                Try now
-              </button>
             </div>
             <div className="grid md:grid-cols-3 gap-4 mt-4">
               {[
+                'Native apps for mobile, wearables, and home devices.',
+                'Email, text messages, and contacts access for richer context.',
+                'Live camera support to expand multimodal input.',
+                'Gemini 3 Live API: audio streaming with direct responses (no STT/TTS roundtrips).',
                 'Cross-channel sync with Slack/Teams and email triage.',
                 'Multi-user “crew” mode to negotiate shared schedules.',
                 'Offline-first mobile with voice diarization.',
@@ -1507,8 +1848,19 @@ function App() {
             <p className="text-xs uppercase font-semibold text-teal-primary tracking-wide">About</p>
             <h3 className="text-2xl font-bold">Purpose-built productivity copilot</h3>
             <p className="text-gray-600 leading-relaxed">
-              Daily Pilot is a voice-first copilot that keeps tasks, calendar, and reasoning in one pane. The landing flow keeps the live demo up front while still giving space for context and roadmap below.
+              Daily Pilot leverages the Gemini 3 Pro Preview model to transform unstructured, multimodal "brain dumps" into a structured, autonomous life-management system. The integration focuses on three technical pillars:
             </p>
+            <ul className="text-gray-600 leading-relaxed list-disc pl-5 space-y-2">
+              <li>
+                <span className="font-semibold text-gray-900">Multimodal Reasoning with Turn-Based Voice:</span> We use a turn-based STT → Gemini 3 → TTS flow for fast, natural interactions. Each utterance is captured, transcribed, and routed through the model before a synthesized response is played back, keeping the UX responsive in absence of LIVE API availability in Gemini 3 Pro Preview models family.
+              </li>
+              <li>
+                <span className="font-semibold text-gray-900">Advanced Tool Use & Multi-Turn Planning:</span> The core engine implements a Think-Act-Observe-React loop. The agent uses specialized tools like <code className="font-mono text-[0.95em]">get_calendar_events()</code> and <code className="font-mono text-[0.95em]">search_location()</code> to resolve ambiguities—such as finding a specific music class time across a 7-day window—before committing tasks to the dashboard. It intelligently correlates locations (e.g., linking "Amazon returns" to the nearest "Whole Foods") based on browser geolocation data.
+              </li>
+              <li>
+                <span className="font-semibold text-gray-900">Explainable AI via Thought Traces:</span> To maximize the Reasoning Log feature, we surface Gemini’s internal thought traces. By capturing and streaming the model’s reasoning signals, users see how the agent prioritizes tasks and resolves scheduling conflicts in real time.
+              </li>
+            </ul>
           </div>
         </section>
 
@@ -1518,20 +1870,23 @@ function App() {
             <div>
               <p className="text-xs uppercase font-semibold text-teal-primary tracking-wide">Credits & Copyright</p>
               <p className="text-gray-600 text-sm md:text-base">
-                © 2024–2026 Daily Pilot team. Uses Google Calendar/Tasks APIs and Gemini for reasoning. Assets: fabric-wave by team.
+                © 2026 - Priyam Singhal
+                <br />
+                Uses Google Calendar/Tasks APIs and Gemini 3 for reasoning.
               </p>
-            </div>
-            <div className="flex gap-3 flex-wrap">
-              <button
-                onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-                className="px-4 py-2 rounded-full bg-teal-primary text-white font-semibold shadow-sm hover:bg-teal-600 transition-colors"
-              >
-                Back to top
-              </button>
             </div>
           </div>
         </section>
       </main>
+
+      {!isDemoInView && (
+        <button
+          onClick={() => scrollToSection('live-demo')}
+          className="fixed z-40 right-4 bottom-5 md:right-6 md:bottom-auto md:top-1/2 md:-translate-y-1/2 rounded-full bg-teal-primary text-white px-5 py-3 text-sm md:text-base font-semibold shadow-xl hover:bg-teal-600 transition-all"
+        >
+          Try Demo Now
+        </button>
+      )}
 
       {/* Mobile Content Panel - Slides up from bottom on small screens */}
       {activeView !== 'home' && (

@@ -3,11 +3,16 @@ import { Part, Content } from "@google/genai";
 // We need to inject the function handler so the service can execute tools during the loop
 type ToolExecutor = (name: string, args: any) => Promise<any>;
 
-export async function processTextPrompt(prompt: string, executeTool: ToolExecutor) {
+export async function processTextPrompt(
+  prompt: string,
+  executeTool: ToolExecutor,
+  provider: 'vertex' | 'public'
+) {
   // Build the API URL for the backend
+  const providerParam = provider === 'public' ? 'public' : 'vertex';
   const apiUrl = import.meta.env.DEV
-    ? 'http://localhost:3001/api/generate'
-    : '/api/generate';
+    ? `http://localhost:3001/api/generate?provider=${providerParam}`
+    : `/api/generate?provider=${providerParam}`;
 
   // We manually manage the conversation history to strictly control roles.
   const contents: Content[] = [
@@ -28,7 +33,8 @@ export async function processTextPrompt(prompt: string, executeTool: ToolExecuto
       },
       body: JSON.stringify({
         contents,
-        config: {} // Backend adds system instruction and tools
+        config: {}, // Backend adds system instruction and tools
+        provider: providerParam
       }),
     });
 
